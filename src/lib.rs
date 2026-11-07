@@ -24,6 +24,8 @@ pub mod lyrics;
 pub mod mail;
 mod cloud_sync;
 mod cloud_sync_ui;
+mod ai_assistant;
+mod ai_assistant_ui;
 mod mail_reader;
 pub mod clipboard;
 pub mod side_dock;

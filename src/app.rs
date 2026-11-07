@@ -705,6 +705,7 @@ pub struct App {
     pub(crate) quota: crate::quota_ui::State,
     pub(crate) updates: crate::updates::State,
     pub(crate) cloud_sync: crate::cloud_sync_ui::State,
+    pub(crate) ai_assistant: crate::ai_assistant_ui::State,
     pub(crate) resident: bar::Motion,
     pub(crate) resident_power: (Option<u8>,bool),
 }
@@ -807,6 +808,7 @@ impl App {
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
             cloud_sync: Default::default(),
+            ai_assistant: Default::default(),
             resident: Default::default(), resident_power:(None,false),
         }
     }
@@ -2317,6 +2319,11 @@ impl App {
     // 面板主体：页标题 + 页面（带切页过渡）+ 翻页箭头 + 页码豆
     // ---------------------------------------------------------------
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        let ai=c.hit(350.0,4.0,26.0,28.0,"ai-assistant-open").on_hover_text(if self.ai_assistant.busy{"AI 助手 · 正在回复"}else{"打开 AI 助手：对话与任务"});
+        let color=if self.ai_assistant.unread{theme::GREEN}else if self.ai_assistant.busy{theme::CYAN}else{theme::GRAY};
+        c.text(363.0,23.0,"AI",11.5,W::Bold,if ai.hovered(){theme::WHITE}else{color},H::Center);
+        if self.ai_assistant.busy||self.ai_assistant.unread{c.circle(374.0,8.0,2.5,color);}
+        if ai.clicked(){self.ai_assistant.open(c.ui.ctx());}
         let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
         let (hover,press)=c.hover_t(&settings);
         c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));

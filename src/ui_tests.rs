@@ -6,6 +6,42 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn ai_assistant_launcher_opens_without_starting_private_clients_in_tests() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();h.app.show_page(4);h.hover(H::local(200.0,80.0),1.0);
+    h.click(H::local(360.0,18.0));assert!(h.app.ai_assistant.open);
+}
+
+#[test]
+#[ignore="按需导出 AI 助手浅色、深色界面，需指定 DAOZAI_AI_PREVIEW_DIR"]
+fn ai_assistant_gallery() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    let (w,hgt,scale)=(940.0f32,700.0f32,1.25f32);
+    for dark in [false,true] {
+        let mut h=H::new();h.app.ai_assistant.preview();h.app.settings.settings_theme=if dark{crate::settings_theme::SettingsTheme::Dark}else{crate::settings_theme::SettingsTheme::Light};h.ctx.set_embed_viewports(false);
+        let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
+        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+            let id=viewport.ids.this;
+            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(w,hgt))),viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(scale),..Default::default()})).collect(),..Default::default()};
+            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+        });
+        let mut raster=crate::preview_raster::Raster::new((w*scale)as usize,(hgt*scale)as usize);
+        for frame in 0..4 {
+            let root=h.ctx.run(Default::default(),|ctx|h.app.ai_assistant_ui(ctx));raster.update_textures(&root.textures_delta);
+            let child=output.lock().unwrap().take().unwrap();raster.update_textures(&child.textures_delta);
+            if frame==3 {
+                raster.buf.fill(if dark{[0.08,0.08,0.09,1.0]}else{[0.96,0.96,0.97,1.0]});
+                raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+                image::RgbaImage::from_raw((w*scale)as u32,(hgt*scale)as u32,rgba).unwrap().save(dest.join(if dark{"assistant-dark.png"}else{"assistant-light.png"})).unwrap();
+            }
+            raster.free_textures(&child.textures_delta);
+        }
+    }
+}
+
+#[test]
 fn cloud_sync_restore_preserves_device_settings_and_rejects_stale_downloads() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let _h=H::new();
