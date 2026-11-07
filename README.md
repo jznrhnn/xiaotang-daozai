@@ -2,20 +2,24 @@
 
 <img src="assets/daozai-logo.png" width="112" alt="岛仔" />
 
-# 岛仔 · Daozai
+# 岛仔 · Daozai AI 探索版
 
-**一座小岛，装下桌面日常。**
+**功能优先，用 AI 探索桌面小岛的更多可能。**
 
 Windows 桌面伙伴，把消息、音乐、日程和 AI 额度放到手边。
 
-[![最新版本](https://img.shields.io/github/v/release/Renly1994/xiaotang-daozai?color=7955b8&label=最新版本)](https://github.com/Renly1994/xiaotang-daozai/releases/latest)
+[![原版最新版本](https://img.shields.io/github/v/release/Renly1994/xiaotang-daozai?color=7955b8&label=原版最新版本)](https://github.com/Renly1994/xiaotang-daozai/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4)](#下载安装)
 [![开源许可](https://img.shields.io/badge/License-MIT-3cbf91)](LICENSE)
 [![Rust 与 egui](https://img.shields.io/badge/Rust-egui-8b6ca8)](#从源码构建与参与开发)
 
-**[下载 Windows 版](https://github.com/Renly1994/xiaotang-daozai/releases/latest)** · [使用指南](docs/USAGE.md) · [更新记录](CHANGELOG.md) · [反馈问题](https://github.com/Renly1994/xiaotang-daozai/issues)
+**[下载原版 Windows 版](https://github.com/Renly1994/xiaotang-daozai/releases/latest)** · [使用指南](docs/USAGE.md) · [更新记录](CHANGELOG.md) · [本探索版反馈](https://github.com/jznrhnn/xiaotang-daozai/issues)
 
 </div>
+
+本仓库是 [岛仔 Daozai](https://github.com/Renly1994/xiaotang-daozai) 的 **AI 探索版**，基于原项目，通过 AI 辅助开发持续尝试新功能和交互，**功能优先**。
+
+**如果你更看重稳定性，建议使用 [原版 Daozai](https://github.com/Renly1994/xiaotang-daozai/releases/latest)。** 本探索版适合体验新功能、参与试用和反馈，不代表原作者的正式发布。感谢原作者及上游贡献者。
 
 岛仔是一款开源的 Windows 桌面小工具。平时收起在屏幕边缘，鼠标靠近就展开；切歌、看日程、复制验证码、记一条待办，都能顺手完成。小岛里的伙伴会眨眼、打盹、喝水，也会跟着音乐唱歌。
 
