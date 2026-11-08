@@ -39,7 +39,7 @@ try {
     New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
     Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $stagingDirectory 'daozai.exe')
     # ZIP 保留给免安装使用和应用内更新；普通用户只需下载安装 EXE。
-    @('LICENSE','THIRD_PARTY_NOTICES.txt') | ForEach-Object {
+    @('LICENSE','THIRD_PARTY_NOTICES.txt','README.md','CHANGELOG.md','docs','assets') | ForEach-Object {
         Copy-Item -LiteralPath (Join-Path $projectRoot $_) -Destination $stagingDirectory -Recurse
     }
     $setup = Join-Path $outputDirectory "Daozai-Setup-v$version-x64.exe"
