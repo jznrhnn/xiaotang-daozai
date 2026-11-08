@@ -37,6 +37,11 @@ pub(crate) struct State {
     error: bool,
     pending_input: Option<String>,
     refresh: Option<Instant>,
+    monitor: Option<crate::ai_monitor::Monitor>,
+    external_tasks: Vec<Task>,
+    monitor_note: String,
+    monitor_disabled: bool,
+    all_clients: bool,
 }
 impl State {
     pub fn edge_alert(&self) -> Option<(Status, bool)> {
@@ -91,12 +96,30 @@ impl State {
     }
     pub fn indicator_status(&self) -> Status {
         if self.last_status == Some(Status::Waiting)
-            || self.tasks.iter().any(|t| t.status == Status::Waiting)
+            || self
+                .tasks
+                .iter()
+                .chain(&self.external_tasks)
+                .any(|t| t.status == Status::Waiting)
         {
             return Status::Waiting;
         }
         if self.busy {
             return Status::Running;
+        }
+        if self
+            .external_tasks
+            .iter()
+            .any(|t| t.status == Status::Running)
+        {
+            return Status::Running;
+        }
+        if let Some(task) = self
+            .external_tasks
+            .iter()
+            .find(|t| matches!(t.status, Status::Failed | Status::Completed))
+        {
+            return task.status;
         }
         if let Some(status) = self.last_status {
             return status;
@@ -178,6 +201,11 @@ impl State {
         if self.busy || self.loading {
             return;
         }
+        if provider == Provider::Claude && id.starts_with("agent-") {
+            self.note = "子任务状态已接入，请在原客户端查看或继续该子任务".into();
+            self.error = false;
+            return;
+        }
         self.provider = Some(provider);
         self.selected = Some(id.clone());
         self.messages.clear();
@@ -220,6 +248,24 @@ impl State {
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
+        if self.monitor.is_none() && !cfg!(test) {
+            self.all_clients = true;
+            self.monitor_disabled = crate::model::config_dir()
+                .join("ai-monitor/disabled")
+                .exists();
+            match crate::ai_monitor::Monitor::start(ctx.clone()) {
+                Ok(monitor) => self.monitor = Some(monitor),
+                Err(error) => self.monitor_note = error,
+            }
+        }
+        let updates: Vec<_> = self
+            .monitor
+            .as_ref()
+            .map(|m| m.rx.try_iter().take(32).collect())
+            .unwrap_or_default();
+        for update in updates {
+            self.receive_monitor(update);
+        }
         self.edge_notices
             .retain(|_, n| !n.seen || n.at.elapsed() < Duration::from_secs(8));
         let mut events = Vec::new();
@@ -266,6 +312,30 @@ impl State {
         } else if self.open {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
+    }
+    fn receive_monitor(&mut self, update: crate::ai_monitor::Update) {
+        self.edge_notices.retain(|id, notice| {
+            !id.starts_with("external:")
+                || notice.status != Status::Waiting
+                || update.tasks.iter().any(|task| {
+                    id == &format!("external:{}:{}", task.provider.name(), task.id)
+                        && task.status == Status::Waiting
+                })
+        });
+        for (provider, id, status) in update.changed {
+            // External events never change the send/cancel state of an island chat.
+            if self.busy && self.selected.as_deref() == Some(&id) && self.provider == Some(provider)
+            {
+                continue;
+            }
+            self.observe_edge(&format!("external:{}:{id}", provider.name()), status, true);
+            if !self.open && matches!(status, Status::Waiting | Status::Completed | Status::Failed)
+            {
+                self.unread = true;
+            }
+        }
+        self.external_tasks = update.tasks;
+        self.monitor_note = update.note;
     }
     fn receive(&mut self, event: Event) {
         match event {
@@ -617,17 +687,60 @@ impl State {
                         .desired_width(f32::INFINITY),
                 );
                 ui.label(
-                    RichText::new("历史记录不代表实时运行状态")
+                    RichText::new("本机任务自动监听；未知状态显示为历史记录")
                         .small()
                         .color(ui.visuals().weak_text_color()),
                 );
                 ui.small_button("任务状态说明").on_hover_ui(Self::legend);
+                ui.checkbox(&mut self.all_clients, "显示全部客户端任务");
+                if !self.monitor_note.is_empty() {
+                    ui.label(
+                        RichText::new(&self.monitor_note)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button(if self.monitor_disabled {
+                                "开启实时事件"
+                            } else {
+                                "关闭实时事件"
+                            })
+                            .clicked()
+                        {
+                            self.monitor_disabled = !self.monitor_disabled;
+                            if let Some(monitor) = &self.monitor {
+                                monitor.configure(!self.monitor_disabled);
+                            }
+                        }
+                        if ui.small_button("重新接入").clicked() {
+                            self.monitor_disabled = false;
+                            if let Some(monitor) = &self.monitor {
+                                monitor.configure(true);
+                            }
+                        }
+                    });
+                }
                 ui.separator();
-                let tasks: Vec<_> = self
-                    .tasks
+                let mut combined = self.tasks.clone();
+                for external in &self.external_tasks {
+                    if let Some(task) = combined
+                        .iter_mut()
+                        .find(|t| t.provider == external.provider && t.id == external.id)
+                    {
+                        if !task.owned || !self.busy || self.selected.as_ref() != Some(&task.id) {
+                            task.status = external.status;
+                            task.updated = external.updated.max(task.updated);
+                        }
+                    } else {
+                        combined.push(external.clone());
+                    }
+                }
+                combined.sort_by_key(|t| std::cmp::Reverse(t.updated));
+                let tasks: Vec<_> = combined
                     .iter()
                     .filter(|t| {
-                        Some(t.provider) == self.provider
+                        (self.all_clients || Some(t.provider) == self.provider)
                             && (self.search.is_empty()
                                 || t.title.to_lowercase().contains(&self.search.to_lowercase()))
                     })
@@ -662,6 +775,9 @@ impl State {
                                             .truncate(),
                                     );
                                     ui.horizontal(|ui| {
+                                        if self.all_clients {
+                                            ui.small(task.provider.name());
+                                        }
                                         status_row(ui, task.status, task.status.label())
                                             .on_hover_ui(Self::legend);
                                         if task.owned {
@@ -871,11 +987,13 @@ impl State {
     }
     #[cfg(test)]
     pub(crate) fn preview_edge(&mut self, status: Status) {
-        self.last_status=Some(status);
+        self.last_status = Some(status);
         self.observe_edge("preview-edge", status, true);
     }
     #[cfg(test)]
     pub(crate) fn preview(&mut self) {
+        self.all_clients = true;
+        self.monitor_note = "本机任务监听中；实时事件已配置（合成预览）".into();
         self.open = true;
         self.provider = Some(Provider::Codex);
         self.agents = vec![Agent {
@@ -1105,5 +1223,28 @@ mod tests {
         assert_eq!(state.edge_alert().unwrap().0, Status::Waiting);
         state.observe_edge("confirm", Status::Idle, false);
         assert_eq!(state.edge_alert().unwrap().0, Status::Failed);
+    }
+    #[test]
+    fn external_task_alert_does_not_stop_island_chat() {
+        let mut state = State::default();
+        state.busy = true;
+        state.selected = Some("island-chat".into());
+        state.provider = Some(Provider::Codex);
+        state.receive_monitor(crate::ai_monitor::Update {
+            tasks: vec![Task {
+                provider: Provider::Claude,
+                id: "external-chat".into(),
+                title: "其他客户端任务".into(),
+                status: Status::Waiting,
+                updated: 1,
+                owned: false,
+            }],
+            changed: vec![(Provider::Claude, "external-chat".into(), Status::Waiting)],
+            note: "监听中".into(),
+        });
+        assert!(state.busy);
+        assert_eq!(state.selected.as_deref(), Some("island-chat"));
+        assert_eq!(state.indicator_status(), Status::Waiting);
+        assert_eq!(state.edge_alert().unwrap().0, Status::Waiting);
     }
 }
