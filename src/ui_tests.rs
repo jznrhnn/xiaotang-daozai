@@ -6,6 +6,45 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+#[ignore="按需导出 AI 岛边提醒，需指定 DAOZAI_AI_EDGE_PREVIEW_DIR"]
+fn ai_assistant_edge_gallery() {
+    use crate::{ai_assistant::Status,model::{Dock,IslandShape,Skin}};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_EDGE_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    let cases=[
+        ("classic-complete",Skin::Classic,IslandShape::Notch,Dock::Top,Status::Completed,false),
+        ("classic-confirm",Skin::Classic,IslandShape::Notch,Dock::Top,Status::Waiting,false),
+        ("cream-complete",Skin::Cream,IslandShape::Pill,Dock::Top,Status::Completed,false),
+        ("cream-confirm",Skin::Cream,IslandShape::Pill,Dock::Top,Status::Waiting,false),
+        ("glass-light-confirm",Skin::GlassLight,IslandShape::Notch,Dock::Top,Status::Waiting,false),
+        ("glass-dark-complete",Skin::GlassDark,IslandShape::Notch,Dock::Top,Status::Completed,false),
+        ("left-confirm",Skin::Classic,IslandShape::Notch,Dock::Left,Status::Waiting,false),
+        ("right-complete",Skin::Cream,IslandShape::Pill,Dock::Right,Status::Completed,false),
+        ("expanded-complete",Skin::Classic,IslandShape::Notch,Dock::Top,Status::Completed,true),
+    ];
+    for (name,skin,shape,dock,status,open) in cases {
+        let mut h=H::new();h.app.settings.skin=skin;h.app.settings.island_shape=shape;h.app.settings.dock=dock;h.app.settings.pet=false;h.app.settings.glass_blur=false;
+        h.app.ai_assistant.preview_edge(status);if open{h.app.show_page(4);}
+        let (w,hgt)=if dock.is_side(){(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H)}else{(WIN_W,WIN_H)};
+        let scale=2.0;let mut raster=crate::preview_raster::Raster::new((w*scale)as usize,(hgt*scale)as usize);
+        for frame in 0..50 {
+            let t=frame as f64/60.0;let env=Env{t,clock:"09:41:00".into(),today:"2026-11-08".into(),date:"11月8日 周日".into(),..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(w,hgt))),time:Some(t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(scale),..Default::default()})).collect(),..Default::default()};
+            let mut region=Rect::NOTHING;
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{region=h.app.frame(ui,Rect::from_min_size(Pos2::ZERO,egui::vec2(w,hgt)),&env).region;});});
+            raster.update_textures(&output.textures_delta);
+            if frame==49 {
+                raster.buf.fill([0.20,0.24,0.32,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw((w*scale)as u32,(hgt*scale)as u32,rgba).unwrap();
+                let crop=region.expand(6.0).intersect(Rect::from_min_size(Pos2::ZERO,egui::vec2(w,hgt)));
+                image::imageops::crop_imm(&image,(crop.left()*scale)as u32,(crop.top()*scale)as u32,(crop.width()*scale)as u32,(crop.height()*scale)as u32).to_image().save(dest.join(format!("{name}.png"))).unwrap();
+            }
+            raster.free_textures(&output.textures_delta);
+        }
+    }
+}
+
+#[test]
 fn ai_assistant_launcher_opens_without_starting_private_clients_in_tests() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.app.show_page(4);h.hover(H::local(200.0,80.0),1.0);
