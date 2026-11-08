@@ -22,6 +22,11 @@ fn task_key(task: &Task) -> String {
     format!("{}:{}", task.provider.name(), task.id)
 }
 impl Inbox {
+    pub(super) fn has_unread(&self, status: Status) -> bool {
+        self.items
+            .values()
+            .any(|item| item.unread && item.task.status == status)
+    }
     pub(super) fn unread_count(&self) -> usize {
         self.items.values().filter(|i| i.unread).count()
     }
@@ -586,6 +591,24 @@ impl crate::app::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn eyes_show_unread_results_then_return_to_running_or_normal() {
+        let mut state = State::default();
+        state.busy = true;
+        assert_eq!(state.eye_status(), Some(Status::Running));
+        state.inbox.record(task("done", Status::Completed, 1), true);
+        assert_eq!(state.eye_status(), Some(Status::Completed));
+        state.read_task("Codex:done");
+        assert_eq!(state.eye_status(), Some(Status::Running));
+        state.busy = false;
+        assert_eq!(state.eye_status(), None);
+        state.inbox.record(task("old", Status::Completed, 1), false);
+        assert_eq!(state.eye_status(), None);
+        state.inbox.record(task("failed", Status::Failed, 1), true);
+        assert_eq!(state.eye_status(), Some(Status::Failed));
+        state.inbox.record(task("ask", Status::Waiting, 2), true);
+        assert_eq!(state.eye_status(), Some(Status::Waiting));
+    }
     fn task(id: &str, status: Status, updated: i64) -> Task {
         Task {
             provider: Provider::Codex,

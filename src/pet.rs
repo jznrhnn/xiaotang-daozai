@@ -22,6 +22,23 @@ pub(crate) enum PetState {
 mod tests {
     use super::*;
     #[test]
+    fn processing_moves_both_eyes_slowly_and_only_while_active() {
+        let pet=Pet::default();let ctx=eframe::egui::Context::default();
+        let mut centers=|t,processing| {
+            let output=ctx.run(Default::default(),|ctx|{eframe::egui::CentralPanel::default().show(ctx,|ui|{
+                let c=Card::new(ui,eframe::egui::Pos2::ZERO,ui.clip_rect());
+                let _=pet.draw_with_ai_status(&c,50.0,t,Some(theme::BLUE),processing);
+            });});
+            output.shapes.iter().filter_map(|s|match &s.shape {
+                eframe::egui::Shape::Path(p) if p.points.len()==13=>Some(p.points.iter().map(|p|p.x).sum::<f32>()/13.0),_=>None
+            }).collect::<Vec<_>>()
+        };
+        let start=centers(0.0,true);let right=centers(0.5,true);let left=centers(1.5,true);
+        assert_eq!(start.len(),2);
+        for eye in 0..2 {assert!((right[eye]-start[eye]-2.0).abs()<0.01);assert!((left[eye]-start[eye]+2.0).abs()<0.01);}
+        assert_eq!(centers(1.5,false),centers(4.5,false));
+    }
+    #[test]
     fn singing_keeps_each_expression_for_fifteen_seconds_after_the_transition() {
         let mut pet=Pet::default();
         pet.step(PetState::Music,0.0,0.0,[0.0;2],true);
@@ -218,18 +235,32 @@ impl Pet {
     }
 
     pub fn draw(&self, c: &Card, cx: f32, t: f64) {
+        let _ = self.draw_with_eye_color(c,cx,t,None);
+    }
+
+    pub fn draw_with_eye_color(&self, c: &Card, cx: f32, t: f64, color: Option<Color32>) -> Option<(usize,usize)> {
+        self.draw_with_ai_status(c,cx,t,color,false)
+    }
+
+    pub fn draw_with_ai_status(&self, c: &Card, cx: f32, t: f64, color: Option<Color32>, processing: bool) -> Option<(usize,usize)> {
+        let from=crate::skin_paint::shape_count(c.ui.ctx(),c.painter.layer_id());
+        let eye_color=color.unwrap_or(theme::WHITE);
+        // One smooth two-second cycle; both eyes move together, without
+        // combining the task motion with the independent cursor-follow gaze.
+        let look_x=if processing {((t*std::f64::consts::TAU/2.0).sin()*2.0) as f32}else{self.gaze[0]};
         for (i, eye) in self.eyes.iter().enumerate() {
-            let x = cx + if i == 0 { -5.6 } else { 5.6 } + self.gaze[0];
+            let x = cx + if i == 0 { -5.6 } else { 5.6 } + look_x;
             let y = 14.5 + self.y + eye.y + self.gaze[1];
             let points: Vec<_> = (0..=12).map(|n| {
                 let q = n as f32 / 6.0 - 1.0;
                 (x + q * eye.spread, y + q * (eye.height / 2.0 + eye.tilt) + (1.0 - q*q) * eye.curve)
             }).collect();
             let stroke=if self.state==PetState::Music {3.6-0.8*smoothstep(0.5,1.5,eye.spread.abs())}else{3.6};
-            c.path(&points, stroke, theme::WHITE);
+            c.path(&points, stroke, eye_color);
             // 圆端点保持胶囊眼睛的轮廓。
-            for p in [points[0], points[12]] { c.circle(p.0, p.1, stroke/2.0, theme::WHITE); }
+            for p in [points[0], points[12]] { c.circle(p.0, p.1, stroke/2.0, eye_color); }
         }
+        let eye_range=(from,crate::skin_paint::shape_count(c.ui.ctx(),c.painter.layer_id()));
         match self.state {
             PetState::Dozing | PetState::Sleeping => {
                 let bob = ((t as f32 * 1.4).sin() + 1.0) * 0.7;
@@ -258,6 +289,7 @@ impl Pet {
             },
             _ => {},
         }
+        color.map(|_|eye_range)
     }
 
     fn draw_music(&self,c:&Card,cx:f32,pose:MusicPose){

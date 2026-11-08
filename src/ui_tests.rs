@@ -12,6 +12,20 @@ fn ai_task_gear_opens_settings_instead_of_chat() {
     h.click(H::local(394.0,18.0));assert!(h.app.settings_open);assert!(!h.app.ai_assistant.open);
 }
 
+#[test]
+#[ignore="按需导出 AI 眼睛颜色：DAOZAI_AI_EYES_PREVIEW_DIR"]
+fn ai_eyes_gallery() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_EYES_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    for (name,status) in [("running",crate::ai_assistant::Status::Running),("complete-unread",crate::ai_assistant::Status::Completed),("waiting",crate::ai_assistant::Status::Waiting),("failed",crate::ai_assistant::Status::Failed)] {
+        for (skin_name,skin) in [("dark",crate::model::Skin::Classic),("light",crate::model::Skin::Cream)] {
+            let mut h=H::new();h.app.settings.pet=true;h.app.settings.skin=skin;h.app.ai_assistant.preview_eye_status(status);
+            let mut raster=feature_raster();shoot_feature(&mut h,&mut raster,&dest,&format!("eyes-{name}-{skin_name}"),75,None,"2026-11-09");
+            let path=dest.join(format!("eyes-{name}-{skin_name}.png"));let image=image::open(&path).unwrap().to_rgba8();
+            image::imageops::crop_imm(&image,280,0,320,80).to_image().save(path).unwrap();
+        }
+    }
+}
 
 #[test]
 fn ai_island_task_row_opens_only_that_task_and_scroll_keeps_page() {

@@ -50,6 +50,32 @@ pub(crate) struct State {
     all_clients: bool,
 }
 impl State {
+    pub(crate) fn eye_status(&self) -> Option<Status> {
+        if self
+            .tasks
+            .iter()
+            .chain(&self.external_tasks)
+            .any(|t| t.status == Status::Waiting)
+            || self.inbox.has_unread(Status::Waiting)
+        {
+            return Some(Status::Waiting);
+        }
+        for status in [Status::Failed, Status::Completed] {
+            if self.inbox.has_unread(status) {
+                return Some(status);
+            }
+        }
+        if self.busy
+            || self
+                .tasks
+                .iter()
+                .chain(&self.external_tasks)
+                .any(|t| t.status == Status::Running)
+        {
+            return Some(Status::Running);
+        }
+        None
+    }
     pub fn edge_alert(&self) -> Option<(Status, bool)> {
         [Status::Waiting, Status::Failed, Status::Completed]
             .into_iter()
@@ -1009,6 +1035,19 @@ impl State {
                     );
                 });
             });
+    }
+    #[cfg(test)]
+    pub(crate) fn preview_eye_status(&mut self, status: Status) {
+        let task = Task {
+            provider: Provider::Codex,
+            id: "eye-preview".into(),
+            title: "眼睛状态预览".into(),
+            status,
+            updated: 1,
+            owned: false,
+        };
+        self.inbox.record(task.clone(), true);
+        self.external_tasks = vec![task];
     }
     #[cfg(test)]
     pub(crate) fn preview_edge(&mut self, status: Status) {
