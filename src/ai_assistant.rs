@@ -44,7 +44,7 @@ impl Status {
             Self::History => "历史记录",
             Self::Idle => "空闲",
             Self::Running => "进行中",
-            Self::Waiting => "等待处理",
+            Self::Waiting => "需要用户确认",
             Self::Completed => "已完成",
             Self::Failed => "失败",
             Self::Cancelled => "已停止",

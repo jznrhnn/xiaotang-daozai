@@ -2319,10 +2319,10 @@ impl App {
     // 面板主体：页标题 + 页面（带切页过渡）+ 翻页箭头 + 页码豆
     // ---------------------------------------------------------------
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
-        let ai=c.hit(350.0,4.0,26.0,28.0,"ai-assistant-open").on_hover_text(if self.ai_assistant.busy{"AI 助手 · 正在回复"}else{"打开 AI 助手：对话与任务"});
-        let color=if self.ai_assistant.unread{theme::GREEN}else if self.ai_assistant.busy{theme::CYAN}else{theme::GRAY};
-        c.text(363.0,23.0,"AI",11.5,W::Bold,if ai.hovered(){theme::WHITE}else{color},H::Center);
-        if self.ai_assistant.busy||self.ai_assistant.unread{c.circle(374.0,8.0,2.5,color);}
+        let ai=crate::quota_ui::bar_tooltip(c.hit(350.0,4.0,26.0,28.0,"ai-assistant-open"),self.ai_assistant.status_tooltip());
+        let color=crate::ai_assistant_ui::light_color(self.ai_assistant.indicator_status(),true);
+        c.text(363.0,23.0,"AI",11.5,W::Bold,if ai.hovered(){theme::WHITE}else{theme::GRAY},H::Center);
+        c.circle(374.0,8.0,3.0,color);
         if ai.clicked(){self.ai_assistant.open(c.ui.ctx());}
         let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
         let (hover,press)=c.hover_t(&settings);
