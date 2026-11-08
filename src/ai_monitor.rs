@@ -383,6 +383,55 @@ fn walk(root: &Path, depth: usize, files: &mut Vec<PathBuf>, budget: &mut usize)
         }
     }
 }
+
+// Native names are independent of rollout activity: /rename does not need to
+// append a task event. Reading this local index never resumes a conversation.
+fn codex_titles(home: &Path) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    let Ok(mut file) = fs::File::open(home.join("session_index.jsonl")) else {
+        return titles;
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(len.saturating_sub(8 * 1024 * 1024)))
+        .is_err()
+    {
+        return titles;
+    }
+    let mut bytes = Vec::new();
+    if file.take(8 * 1024 * 1024).read_to_end(&mut bytes).is_err() {
+        return titles;
+    }
+    for line in bytes.split(|b| *b == b'\n') {
+        if line.len() > MAX_RECORD {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if let (Some(id), Some(name)) = (value["id"].as_str(), value["thread_name"].as_str()) {
+            let name = name.trim();
+            if valid_id(id) && !name.is_empty() {
+                titles.insert(id.into(), name.chars().take(240).collect());
+            }
+        }
+    }
+    titles
+}
+
+fn initial_title(provider: Provider, path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(256 * 1024).read_to_end(&mut bytes).ok()?;
+    bytes
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+        .find_map(|v| {
+            log_event(provider, &v)
+                .and_then(|(_, title)| title)
+                .filter(|s| !s.trim().is_empty())
+        })
+}
 impl Watcher {
     fn scan(
         &mut self,
@@ -464,6 +513,13 @@ impl Watcher {
                     &mut changed,
                 );
             }
+            if baseline {
+                if let Some(name) = initial_title(provider, &path) {
+                    if let Some(entry) = self.entries.get_mut(&key(provider, &id)) {
+                        entry.task.title = name;
+                    }
+                }
+            }
         }
         let mut queued: Vec<_> = fs::read_dir(root.join("events"))
             .into_iter()
@@ -505,6 +561,19 @@ impl Watcher {
                 }
             }
             let _ = fs::remove_file(file.path());
+        }
+        for (provider, home) in homes {
+            if *provider != Provider::Codex {
+                continue;
+            }
+            for (id, name) in codex_titles(home) {
+                if let Some(entry) = self.entries.get_mut(&key(*provider, &id)) {
+                    if entry.task.title != name {
+                        entry.task.title = name;
+                        self.dirty = true;
+                    }
+                }
+            }
         }
         for entry in self.entries.values_mut() {
             if entry.task.status == Status::Running && now - entry.event_at > 10 * 60_000 {
@@ -555,7 +624,7 @@ impl Watcher {
                 task: Task {
                     provider,
                     id: id.into(),
-                    title: format!("{} · {}", provider.name(), &id[..id.len().min(8)]),
+                    title: "未命名任务".into(),
                     status: Status::History,
                     updated: at / 1000,
                     owned: false,
@@ -570,7 +639,7 @@ impl Watcher {
         }
         let old = entry.task.status;
         if let Some(title) = title {
-            if !title.is_empty() {
+            if !title.is_empty() && entry.task.title == "未命名任务" {
                 entry.task.title = title;
             }
         }
@@ -795,6 +864,61 @@ mod tests {
         assert_eq!(log_event(Provider::Claude, &json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion"}]}})).unwrap().0, "waiting");
     }
     #[test]
+    fn native_names_override_prompts_and_renames_do_not_notify() {
+        let root = std::env::temp_dir().join(format!("daozai-native-title-{}", std::process::id()));
+        let home = root.join("codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let id = "00000000-0000-0000-0000-000000000002";
+        let path = sessions.join(format!("rollout-{id}.jsonl"));
+        let now = chrono::Utc::now().to_rfc3339();
+        let records = [
+            json!({"timestamp":now,"type":"event_msg","payload":{"type":"user_message","message":"首次提问摘要"}}),
+            json!({"timestamp":now,"type":"event_msg","payload":{"type":"user_message","message":"后续追问不应替换名称"}}),
+            json!({"timestamp":now,"type":"event_msg","payload":{"type":"task_complete"}}),
+        ];
+        fs::write(
+            &path,
+            records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let index = home.join("session_index.jsonl");
+        fs::write(
+            &index,
+            format!("{}\n", json!({"id":id,"thread_name":"客户端任务名称"})),
+        )
+        .unwrap();
+        let homes = [(Provider::Codex, home.clone())];
+        let mut w = Watcher::default();
+        let first = w.scan(&homes, &root, false, "");
+        assert_eq!(first.tasks[0].title, "客户端任务名称");
+        assert!(first.changed.is_empty());
+        w.first = false;
+        w.dirty = false;
+        fs::write(
+            &index,
+            format!(
+                "{}\n{}\n",
+                json!({"id":id,"thread_name":"客户端任务名称"}),
+                json!({"id":id,"thread_name":"用户重命名后的名称"})
+            ),
+        )
+        .unwrap();
+        let renamed = w.scan(&homes, &root, false, "");
+        assert_eq!(renamed.tasks[0].title, "用户重命名后的名称");
+        assert!(renamed.changed.is_empty());
+        assert!(w.dirty);
+        assert_eq!(
+            initial_title(Provider::Codex, &path).as_deref(),
+            Some("首次提问摘要")
+        );
+        fs::remove_file(index).unwrap();
+        fs::remove_file(path).unwrap();
+        let _ = fs::remove_dir(sessions);
+        let _ = fs::remove_dir(home);
+        let _ = fs::remove_dir(root);
+    }
+    #[test]
     fn monitor_scan_ignores_history_but_not_new_completion() {
         use std::io::Write;
         let root = std::env::temp_dir().join(format!("daozai-monitor-scan-{}", std::process::id()));
@@ -832,6 +956,18 @@ mod tests {
             "只读检查",
         );
         assert!(update.changed.is_empty());
+        let native = homes()
+            .into_iter()
+            .find(|(p, _)| *p == Provider::Codex)
+            .map(|(_, p)| codex_titles(&p))
+            .unwrap_or_default();
+        let matched: Vec<_> = update
+            .tasks
+            .iter()
+            .filter(|t| t.provider == Provider::Codex && native.contains_key(&t.id))
+            .collect();
+        assert!(matched.iter().all(|t| native.get(&t.id) == Some(&t.title)));
+        println!("与原客户端名称一致的任务：{}", matched.len());
         println!(
             "发现记录文件：{}；有效任务：{}；运行中：{}",
             w.paths.len(),

@@ -6,6 +6,39 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn ai_task_gear_opens_settings_instead_of_chat() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.show_page(crate::app::AI_TASKS_PAGE);h.hover(H::local(260.0,20.0),1.0);
+    h.click(H::local(394.0,18.0));assert!(h.app.settings_open);assert!(!h.app.ai_assistant.open);
+}
+
+
+#[test]
+fn ai_island_task_row_opens_only_that_task_and_scroll_keeps_page() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();h.app.ai_assistant.preview_tasks();h.app.ai_assistant.tasks_open=false;
+    h.app.show_page(crate::app::AI_TASKS_PAGE);h.hover(H::local(210.0,65.0),1.0);
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="检查云同步的配置兼容性")));
+    assert!(!h.app.ai_assistant.tasks_open);
+    h.click(H::local(180.0,46.0));assert!(h.app.ai_assistant.open);assert!(!h.app.ai_assistant.tasks_open);
+    h.app.ai_assistant.tasks_open=false;
+    h.hover(H::local(210.0,65.0),0.5);h.wheel(-40.0);
+    assert_eq!(h.app.page,crate::app::AI_TASKS_PAGE);
+}
+
+#[test]
+#[ignore="按需导出小岛 AI 任务列表：DAOZAI_AI_ISLAND_PREVIEW_DIR"]
+fn ai_island_tasks_gallery() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_ISLAND_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    for (name,skin) in [("island-tasks-dark",crate::model::Skin::Classic),("island-tasks-light",crate::model::Skin::Cream)] {
+        let mut h=H::new();h.app.settings.skin=skin;h.app.settings.pet=false;h.app.ai_assistant.preview_tasks();h.app.ai_assistant.tasks_open=false;
+        h.app.show_page(crate::app::AI_TASKS_PAGE);let mut raster=feature_raster();
+        shoot_feature(&mut h,&mut raster,&dest,name,60,Some(H::local(290.0,20.0)),"2026-11-08");
+    }
+}
+
+#[test]
 #[ignore="按需导出 AI 岛边提醒，需指定 DAOZAI_AI_EDGE_PREVIEW_DIR"]
 fn ai_assistant_edge_gallery() {
     use crate::{ai_assistant::Status,model::{Dock,IslandShape,Skin}};
@@ -48,17 +81,27 @@ fn ai_assistant_edge_gallery() {
 fn ai_assistant_launcher_opens_without_starting_private_clients_in_tests() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.app.show_page(4);h.hover(H::local(200.0,80.0),1.0);
-    h.click(H::local(360.0,18.0));assert!(h.app.ai_assistant.open);
+    h.click(H::local(360.0,18.0));assert_eq!(h.app.page,crate::app::AI_TASKS_PAGE);
 }
 
 #[test]
 #[ignore="按需导出 AI 助手浅色、深色界面，需指定 DAOZAI_AI_PREVIEW_DIR"]
 fn ai_assistant_gallery() {
+    export_ai_gallery(false);
+}
+
+#[test]
+#[ignore="按需导出 AI 任务独立窗口：DAOZAI_AI_TASKS_PREVIEW_DIR"]
+fn ai_tasks_gallery() {
+    export_ai_gallery(true);
+}
+
+fn export_ai_gallery(tasks:bool) {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    let dest=std::path::PathBuf::from(std::env::var_os(if tasks{"DAOZAI_AI_TASKS_PREVIEW_DIR"}else{"DAOZAI_AI_PREVIEW_DIR"}).expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
     let (w,hgt,scale)=(940.0f32,700.0f32,1.25f32);
     for dark in [false,true] {
-        let mut h=H::new();h.app.ai_assistant.preview();h.app.settings.settings_theme=if dark{crate::settings_theme::SettingsTheme::Dark}else{crate::settings_theme::SettingsTheme::Light};h.ctx.set_embed_viewports(false);
+        let mut h=H::new();if tasks{h.app.ai_assistant.preview_tasks();}else{h.app.ai_assistant.preview();}h.app.settings.settings_theme=if dark{crate::settings_theme::SettingsTheme::Dark}else{crate::settings_theme::SettingsTheme::Light};h.ctx.set_embed_viewports(false);
         let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
         egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
             let id=viewport.ids.this;
@@ -73,7 +116,7 @@ fn ai_assistant_gallery() {
                 raster.buf.fill(if dark{[0.08,0.08,0.09,1.0]}else{[0.96,0.96,0.97,1.0]});
                 raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
                 let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
-                image::RgbaImage::from_raw((w*scale)as u32,(hgt*scale)as u32,rgba).unwrap().save(dest.join(if dark{"assistant-dark.png"}else{"assistant-light.png"})).unwrap();
+                image::RgbaImage::from_raw((w*scale)as u32,(hgt*scale)as u32,rgba).unwrap().save(dest.join(if tasks{if dark{"tasks-dark.png"}else{"tasks-light.png"}}else{if dark{"assistant-dark.png"}else{"assistant-light.png"}})).unwrap();
             }
             raster.free_textures(&child.textures_delta);
         }
@@ -170,6 +213,9 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
         "mail_enabled=0\nmail_code=0\nmail_interval=300\nmail_ics=30\ncalendar_prompt=0\ncalendar_auto_sync=0\n");
     std::fs::write(directory.join("settings.txt"),legacy).unwrap();
     let upgraded=crate::model::Settings::load();
+    assert_eq!(&upgraded.visible_pages[..8],&[true,false,true,true,true,true,true,true]);
+    assert!(upgraded.visible_pages[8]);
+    assert_eq!(upgraded.page_order,[5,2,0,1,3,4,6,7,8]);
     assert!(upgraded.display_id.is_empty() && upgraded.avoid_apps.is_empty());
     assert!(upgraded.avoid_browsers && upgraded.bluetooth_notifications);
     assert!(!upgraded.clock_12h && !upgraded.notification_preview);
@@ -177,7 +223,10 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
     for _ in 0..2 {
         crate::model::Settings::load().save();
         let saved=std::fs::read_to_string(directory.join("settings.txt")).unwrap();
-        for line in legacy.lines(){assert!(saved.lines().any(|value|value==line),"升级保存不能改变旧设置：{line}");}
+        for line in legacy.lines(){
+            let expected=if line.starts_with("visible_pages="){format!("{line}1")}else if line.starts_with("page_order="){format!("{line},8")}else{line.to_owned()};
+            assert!(saved.lines().any(|value|value==expected),"升级保存应保留原设置并追加任务页：{line}");
+        }
     }
     std::fs::write(directory.join("mail-accounts.json"),br#"[{"email":"OldUser@qq.com","provider":"qq","enabled":true},{"email":"old@icloud.com","provider":"icloud","enabled":false}]"#).unwrap();
     let accounts=crate::mail::load_accounts();
@@ -1470,7 +1519,7 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
     h.app.shelf.items.clear();h.app.todos.items.clear();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     h.hover(H::local(210.0,18.0),0.3);
-    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,0]),(40.0,[7,6,5,4,3,2,1,0])] {
+    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,0]),(40.0,[8,7,6,5,4,3,2,1,0])] {
         for page in pages {
             h.wheel(delta);
             assert_eq!(h.app.page,page,"滚轮翻页不能被空的置物架或待办卡住");
@@ -1526,9 +1575,9 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
 }
 
 #[test]
-fn navigation_wraps_between_eight_pages_and_notification_settings_remain_accessible() {
+fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,7);
+    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
     h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,68.0));assert_eq!(h.app.page,0);
     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
 }
@@ -1678,7 +1727,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
 fn page_visibility_is_saved_and_sets_the_starting_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    assert_eq!(h.app.settings.visible_pages,[true;8]);
+    assert_eq!(h.app.settings.visible_pages,[true;9]);
     assert!(h.app.settings.show_battery);
     h.app.settings.show_battery=false;
     h.app.set_page_visible(0,false);
@@ -1686,17 +1735,17 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert!(!settings.show_battery);
-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true]);
+    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),1);
     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
     assert!(!restarted.settings.show_battery);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false]);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=1000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true],"旧版页面开关应保留，并开启新增的日程页");
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true],"旧版页面开关应保留，并开启新增的日程页");
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=invalid\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true;8]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true;9]);
 }
 
 #[test]
@@ -1736,7 +1785,7 @@ fn battery_module_can_disable_only_the_power_warning() {
 fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    for page in [1,3,4,6,7] {h.app.set_page_visible(page,false);}
+    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     for expected in [2,5,0] {
         h.click(H::local(398.0,68.0));
@@ -1765,7 +1814,7 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
     h.app.set_page_visible(4,false);
     assert_eq!(h.app.page,0);
     assert!(!h.app.is_editing());
-    for page in [0,1,3,5,6,7] {h.app.set_page_visible(page,false);}
+    for page in [0,1,3,5,6,7,8] {h.app.set_page_visible(page,false);}
     assert_eq!(h.app.page,2);
     h.app.set_page_visible(2,false);
     assert!(h.app.settings.visible_pages[2],"不能关闭最后一个页面");
@@ -3853,13 +3902,13 @@ fn calendar_sync_result_does_not_enqueue_another_sync() {
 fn page_order_persists_and_controls_navigation() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    h.app.settings.page_order=[5,2,0,1,3,4,6,7];
+    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
     h.app.settings.save();
     let settings=crate::model::Settings::load();
-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7]);
+    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),5);
-    for page in [1,3,4,6,7] {h.app.set_page_visible(page,false);}
+    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     for expected in [5,2,0] {
         h.click(H::local(398.0,68.0));
@@ -3872,7 +3921,7 @@ fn page_order_persists_and_controls_navigation() {
     assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7]);
+        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
     }
 }
 
@@ -3899,9 +3948,9 @@ fn page_order_drag_applies_on_release_and_saves() {
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7]);
+    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7]);
+    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -5576,7 +5625,7 @@ fn wheel_short_clipboard_and_calendar_turn_pages(){
     h.app.calendar.view.day=day;h.app.calendar.view.month=crate::calendar::month_start(day);h.app.calendar.view.loaded=Some(h.app.calendar.view.month);
     for (count,ended,all_day) in [(0,false,false),(1,false,false),(5,false,false),(8,true,false),(4,false,true)]{
         h.app.calendar.view.events=(0..count).map(|i|crate::mail::Meeting{all_day,title:format!("日程 {i}"),start:if ended{start-7200}else{start+i*60},end:Some(if ended{start-3600}else{start+3600}),at:String::new(),uid:format!("wheel-{i}")}).collect();
-        for (delta,page) in [(-40.0,0),(40.0,6)]{
+        for (delta,page) in [(-40.0,8),(40.0,6)]{
             h.app.show_page(7);h.hover(H::local(300.0,160.0),0.5);h.wheel(delta);
             assert_eq!(h.app.page,page,"日历可见列表未溢出应翻页，条数 {count}");
         }

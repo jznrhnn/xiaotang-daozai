@@ -28,7 +28,7 @@ impl Provider {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Status {
     History,
     Idle,
@@ -57,7 +57,7 @@ pub(crate) struct Agent {
     pub available: bool,
     pub note: String,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Task {
     pub provider: Provider,
     pub id: String,
