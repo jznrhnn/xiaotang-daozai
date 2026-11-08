@@ -10,6 +10,7 @@ pub(crate) struct State {
     pub open: bool,
     pub busy: bool,
     pub unread: bool,
+    last_status: Option<Status>,
     focus: bool,
     service: Option<Service>,
     agents: Vec<Agent>,
@@ -28,6 +29,31 @@ pub(crate) struct State {
     refresh: Option<Instant>,
 }
 impl State {
+    pub fn indicator_status(&self) -> Status {
+        if self.last_status == Some(Status::Waiting)
+            || self.tasks.iter().any(|t| t.status == Status::Waiting)
+        {
+            return Status::Waiting;
+        }
+        if self.busy {
+            return Status::Running;
+        }
+        if let Some(status) = self.last_status {
+            return status;
+        }
+        if self.tasks.iter().any(|t| t.status == Status::Failed) {
+            return Status::Failed;
+        }
+        Status::History
+    }
+    pub fn status_tooltip(&self) -> String {
+        let current = match self.indicator_status() {
+            Status::History => "暂无已确认的实时任务状态",
+            Status::Waiting => "需要用户确认，请在原客户端处理",
+            status => status.label(),
+        };
+        format!("AI 任务状态\n当前：{current}\n\n红灯：执行失败\n绿灯：执行完成\n橙灯：需要用户确认\n蓝灯：正在执行\n灰灯：空闲、已停止或状态未知\n\n点击打开 AI 助手")
+    }
     pub fn open(&mut self, ctx: &egui::Context) {
         self.open = true;
         self.focus = true;
@@ -151,6 +177,9 @@ impl State {
             self.receive(event);
         }
         if disconnected {
+            if self.busy {
+                self.last_status = Some(Status::Failed);
+            }
             self.service = None;
             self.connecting = false;
             self.loading = false;
@@ -255,6 +284,7 @@ impl State {
                 if old.as_ref().is_some_and(|s| s.starts_with("pending-")) {
                     self.tasks.retain(|t| Some(&t.id) != old.as_ref());
                 }
+                self.last_status = Some(Status::Running);
                 self.selected = Some(id.clone());
                 self.provider = Some(provider);
                 self.busy = true;
@@ -304,6 +334,7 @@ impl State {
                 }
             }
             Event::Status { id, status, note } => {
+                self.last_status = Some(status);
                 if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
                     task.status = status;
                     task.updated = chrono::Utc::now().timestamp();
@@ -323,6 +354,7 @@ impl State {
                 self.loading = false;
                 self.connecting = false;
                 if let Some(text) = self.pending_input.take() {
+                    self.last_status = Some(Status::Failed);
                     self.input = text;
                     if self.messages.last().is_some_and(|m| m.user) {
                         self.messages.pop();
@@ -344,26 +376,71 @@ impl State {
         }
     }
     fn theme_color(ui: &egui::Ui, status: Status) -> Color32 {
-        match status {
-            Status::Running => {
-                if ui.visuals().dark_mode {
-                    Color32::from_rgb(140, 190, 255)
-                } else {
-                    Color32::from_rgb(35, 98, 180)
-                }
+        light_color(status, ui.visuals().dark_mode)
+    }
+    fn legend(ui: &mut egui::Ui) {
+        ui.label(RichText::new("AI 任务状态说明").strong());
+        for (status, label) in [
+            (Status::Failed, "红灯：执行失败"),
+            (Status::Completed, "绿灯：执行完成"),
+            (Status::Waiting, "橙灯：需要用户确认"),
+            (Status::Running, "蓝灯：正在执行"),
+            (Status::History, "灰灯：空闲、已停止或状态未知"),
+        ] {
+            status_row(ui, status, label);
+        }
+        ui.small("确认或授权操作请在原客户端处理；历史记录不会推测成已完成。");
+    }
+}
+pub(crate) fn light_color(status: Status, dark: bool) -> Color32 {
+    match status {
+        Status::Running => {
+            if dark {
+                Color32::from_rgb(140, 190, 255)
+            } else {
+                Color32::from_rgb(35, 98, 180)
             }
-            Status::Completed => {
-                if ui.visuals().dark_mode {
-                    Color32::from_rgb(112, 221, 160)
-                } else {
-                    Color32::from_rgb(25, 117, 65)
-                }
+        }
+        Status::Completed => {
+            if dark {
+                Color32::from_rgb(112, 221, 160)
+            } else {
+                Color32::from_rgb(25, 117, 65)
             }
-            Status::Failed => ui.visuals().error_fg_color,
-            Status::Waiting => ui.visuals().warn_fg_color,
-            _ => ui.visuals().weak_text_color(),
+        }
+        Status::Failed => {
+            if dark {
+                Color32::from_rgb(255, 120, 120)
+            } else {
+                Color32::from_rgb(190, 43, 53)
+            }
+        }
+        Status::Waiting => {
+            if dark {
+                Color32::from_rgb(255, 178, 70)
+            } else {
+                Color32::from_rgb(181, 92, 9)
+            }
+        }
+        _ => {
+            if dark {
+                Color32::from_gray(150)
+            } else {
+                Color32::from_gray(105)
+            }
         }
     }
+}
+fn status_row(ui: &mut egui::Ui, status: Status, text: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let color = light_color(status, ui.visuals().dark_mode);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 3.5, color);
+        ui.label(RichText::new(text).small().color(color));
+    })
+    .response
+}
+impl State {
     fn content(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("assistant-toolbar")
             .frame(
@@ -374,6 +451,17 @@ impl State {
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("AI 助手").size(19.0).strong());
+                    let status = self.indicator_status();
+                    status_row(
+                        ui,
+                        status,
+                        if status == Status::History {
+                            "暂无实时状态"
+                        } else {
+                            status.label()
+                        },
+                    )
+                    .on_hover_ui(Self::legend);
                     let selected = self.provider.map(Provider::name).unwrap_or("自动识别中");
                     ui.add_enabled_ui(!self.busy && !self.loading && !self.connecting, |ui| {
                         egui::ComboBox::from_id_salt("assistant-provider")
@@ -467,6 +555,7 @@ impl State {
                         .small()
                         .color(ui.visuals().weak_text_color()),
                 );
+                ui.small_button("任务状态说明").on_hover_ui(Self::legend);
                 ui.separator();
                 let tasks: Vec<_> = self
                     .tasks
@@ -507,11 +596,8 @@ impl State {
                                             .truncate(),
                                     );
                                     ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(task.status.label())
-                                                .small()
-                                                .color(Self::theme_color(ui, task.status)),
-                                        );
+                                        status_row(ui, task.status, task.status.label())
+                                            .on_hover_ui(Self::legend);
                                         if task.owned {
                                             ui.label(
                                                 RichText::new("岛仔")
@@ -727,6 +813,7 @@ impl State {
             note: "已复用本机登录（预览）".into(),
         }];
         self.selected = Some("demo-chat".into());
+        self.last_status = Some(Status::Completed);
         self.tasks = vec![
             Task {
                 provider: Provider::Codex,
@@ -741,6 +828,22 @@ impl State {
                 id: "demo-history".into(),
                 title: "讨论云同步的交互细节".into(),
                 status: Status::History,
+                updated: 0,
+                owned: false,
+            },
+            Task {
+                provider: Provider::Codex,
+                id: "demo-failed".into(),
+                title: "检查部署结果".into(),
+                status: Status::Failed,
+                updated: 0,
+                owned: true,
+            },
+            Task {
+                provider: Provider::Codex,
+                id: "demo-confirm".into(),
+                title: "确认下一步操作".into(),
+                status: Status::Waiting,
                 updated: 0,
                 owned: false,
             },
@@ -855,5 +958,33 @@ mod tests {
         });
         assert!(!state.busy);
         assert!(state.unread);
+    }
+    #[test]
+    fn status_lights_distinguish_failure_completion_and_confirmation_after_opening() {
+        let mut state = State::default();
+        state.selected = Some("chat".into());
+        for status in [Status::Failed, Status::Completed, Status::Waiting] {
+            state.receive(Event::Status {
+                id: "chat".into(),
+                status,
+                note: status.label().into(),
+            });
+            assert_eq!(state.indicator_status(), status);
+            state.open(&egui::Context::default());
+            assert_eq!(
+                state.indicator_status(),
+                status,
+                "打开窗口不能把失败或完成提示变成绿灯/灰灯"
+            );
+        }
+        assert!(state.status_tooltip().contains("橙灯：需要用户确认"));
+        for dark in [false, true] {
+            let red = light_color(Status::Failed, dark);
+            assert!(red.r() > red.g());
+            let green = light_color(Status::Completed, dark);
+            assert!(green.g() > green.r());
+            let orange = light_color(Status::Waiting, dark);
+            assert!(orange.r() > orange.g() && orange.g() > orange.b());
+        }
     }
 }
