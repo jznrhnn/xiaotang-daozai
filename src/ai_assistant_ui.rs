@@ -3,7 +3,16 @@ use crate::ai_assistant::{
     Agent, Control, Event, Message, Provider, Service, Status, Task, MAX_TEXT,
 };
 use eframe::egui::{self, Color32, RichText};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+
+struct EdgeNotice {
+    status: Status,
+    at: Instant,
+    seen: bool,
+}
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -11,6 +20,7 @@ pub(crate) struct State {
     pub busy: bool,
     pub unread: bool,
     last_status: Option<Status>,
+    edge_notices: HashMap<String, EdgeNotice>,
     focus: bool,
     service: Option<Service>,
     agents: Vec<Agent>,
@@ -29,6 +39,56 @@ pub(crate) struct State {
     refresh: Option<Instant>,
 }
 impl State {
+    pub fn edge_alert(&self) -> Option<(Status, bool)> {
+        [Status::Waiting, Status::Failed, Status::Completed]
+            .into_iter()
+            .find_map(|status| {
+                let notices: Vec<_> = self
+                    .edge_notices
+                    .values()
+                    .filter(|n| {
+                        n.status == status && (!n.seen || n.at.elapsed() < Duration::from_secs(8))
+                    })
+                    .collect();
+                (!notices.is_empty()).then(|| {
+                    (
+                        status,
+                        notices
+                            .iter()
+                            .any(|n| n.at.elapsed() < Duration::from_secs(8)),
+                    )
+                })
+            })
+    }
+    fn observe_edge(&mut self, id: &str, status: Status, live: bool) {
+        if status == Status::Waiting || live && matches!(status, Status::Completed | Status::Failed)
+        {
+            if self.edge_notices.get(id).is_none_or(|n| n.status != status) {
+                self.edge_notices.insert(
+                    id.into(),
+                    EdgeNotice {
+                        status,
+                        at: Instant::now(),
+                        seen: false,
+                    },
+                );
+            }
+        } else if live
+            || self
+                .edge_notices
+                .get(id)
+                .is_some_and(|n| n.status == Status::Waiting)
+        {
+            self.edge_notices.remove(id);
+        }
+    }
+    fn acknowledge_edge(&mut self) {
+        for notice in self.edge_notices.values_mut() {
+            if notice.status != Status::Waiting {
+                notice.seen = true;
+            }
+        }
+    }
     pub fn indicator_status(&self) -> Status {
         if self.last_status == Some(Status::Waiting)
             || self.tasks.iter().any(|t| t.status == Status::Waiting)
@@ -58,6 +118,7 @@ impl State {
         self.open = true;
         self.focus = true;
         self.unread = false;
+        self.acknowledge_edge();
         if self.service.is_none() && !cfg!(test) {
             self.discover(ctx);
         }
@@ -159,6 +220,8 @@ impl State {
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
+        self.edge_notices
+            .retain(|_, n| !n.seen || n.at.elapsed() < Duration::from_secs(8));
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(service) = &self.service {
@@ -240,6 +303,7 @@ impl State {
                     self.tasks.retain(|t| t.provider != provider);
                 }
                 for task in tasks {
+                    self.observe_edge(&task.id, task.status, false);
                     if let Some(existing) = self
                         .tasks
                         .iter_mut()
@@ -285,6 +349,7 @@ impl State {
                     self.tasks.retain(|t| Some(&t.id) != old.as_ref());
                 }
                 self.last_status = Some(Status::Running);
+                self.observe_edge(&id, Status::Running, true);
                 self.selected = Some(id.clone());
                 self.provider = Some(provider);
                 self.busy = true;
@@ -334,6 +399,7 @@ impl State {
                 }
             }
             Event::Status { id, status, note } => {
+                self.observe_edge(&id, status, true);
                 self.last_status = Some(status);
                 if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
                     task.status = status;
@@ -804,6 +870,11 @@ impl State {
             });
     }
     #[cfg(test)]
+    pub(crate) fn preview_edge(&mut self, status: Status) {
+        self.last_status=Some(status);
+        self.observe_edge("preview-edge", status, true);
+    }
+    #[cfg(test)]
     pub(crate) fn preview(&mut self) {
         self.open = true;
         self.provider = Some(Provider::Codex);
@@ -882,6 +953,9 @@ impl crate::app::App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 close = ctx.input(|i| i.viewport().close_requested());
+                if ctx.input(|i| i.viewport().focused == Some(true)) {
+                    self.ai_assistant.acknowledge_edge();
+                }
                 let original = ctx.style();
                 let mut style = (*original).clone();
                 let dark = self
@@ -986,5 +1060,50 @@ mod tests {
             let orange = light_color(Status::Waiting, dark);
             assert!(orange.r() > orange.g() && orange.g() > orange.b());
         }
+    }
+    #[test]
+    fn edge_completion_waits_to_be_seen_then_expires_but_confirmation_stays() {
+        let mut state = State::default();
+        state.receive(Event::Status {
+            id: "complete".into(),
+            status: Status::Completed,
+            note: "已完成".into(),
+        });
+        assert_eq!(state.edge_alert(), Some((Status::Completed, true)));
+        state.edge_notices.get_mut("complete").unwrap().at =
+            Instant::now() - Duration::from_secs(9);
+        assert_eq!(
+            state.edge_alert(),
+            Some((Status::Completed, false)),
+            "未查看的结果保留常亮，停止持续动画"
+        );
+        state.acknowledge_edge();
+        assert!(state.edge_alert().is_none());
+        state.receive(Event::Status {
+            id: "confirm".into(),
+            status: Status::Waiting,
+            note: "请确认".into(),
+        });
+        state.edge_notices.get_mut("confirm").unwrap().at = Instant::now() - Duration::from_secs(9);
+        state.acknowledge_edge();
+        assert_eq!(state.edge_alert(), Some((Status::Waiting, false)));
+        state.receive(Event::Status {
+            id: "confirm".into(),
+            status: Status::Running,
+            note: "继续执行".into(),
+        });
+        assert!(state.edge_alert().is_none());
+    }
+    #[test]
+    fn historical_records_do_not_light_the_edge_and_confirmation_has_priority() {
+        let mut state = State::default();
+        state.observe_edge("history", Status::History, false);
+        assert!(state.edge_alert().is_none());
+        state.observe_edge("done", Status::Completed, true);
+        state.observe_edge("failed", Status::Failed, true);
+        state.observe_edge("confirm", Status::Waiting, false);
+        assert_eq!(state.edge_alert().unwrap().0, Status::Waiting);
+        state.observe_edge("confirm", Status::Idle, false);
+        assert_eq!(state.edge_alert().unwrap().0, Status::Failed);
     }
 }

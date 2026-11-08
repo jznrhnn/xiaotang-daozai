@@ -1645,6 +1645,10 @@ impl App {
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
         if let Some(r)=notice_shape {self.paint_body(&painter,r,5.0,8.0,12.5,feather);}
+        let ai_edge=self.ai_assistant.edge_alert();
+        if let Some((status,animate))=ai_edge {
+            self.paint_ai_edge(&painter,body,flare,flare_h,radius,status,animate);
+        }
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
 
         // 内容只随形体「揭开」：不缩放，按面板裁剪，到 55% 才开始淡入
@@ -1823,7 +1827,8 @@ impl App {
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || ai_edge.is_some_and(|(_,animate)|animate);
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
@@ -2053,6 +2058,25 @@ impl App {
     }
 
     /// 绘制岛体（或通知胶囊）的本体：经典皮肤为纯黑；毛玻璃为着色底 + 顶部柔光 + 边缘高光。
+    fn paint_ai_edge(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,status:crate::ai_assistant::Status,animate:bool) {
+        let color=crate::ai_assistant_ui::light_color(status,true);
+        let strength=if animate{0.66+0.34*(self.t as f32*std::f32::consts::TAU/2.4).sin().mul_add(0.5,0.5)}else{0.8};
+        // Keep the soft rim inside the existing native window mask, including side docks.
+        for (width,opacity) in [(7.0_f32,0.12_f32),(3.5,0.3),(1.4,0.95)] {
+            let width=width.min(rect.width().min(rect.height())*0.4);
+            let inset=width*0.5+0.3;
+            let edge=rect.shrink(inset);
+            if edge.width()<=0.0||edge.height()<=0.0{continue;}
+            let stroke=egui::Stroke::new(width,paint::alpha(color,strength*opacity));
+            let radius=(radius-inset).max(0.5);
+            if self.settings.island_shape==model::IslandShape::Pill || flare==0.0&&!self.side() {
+                painter.rect_stroke(edge,radius,stroke,egui::StrokeKind::Inside);
+            } else {
+                let points=if self.side(){shape::outline_docked(edge,self.dock(),flare,flare_h,radius)}else{shape::outline(edge,flare,flare_h,radius)};
+                painter.add(egui::Shape::closed_line(points,stroke));
+            }
+        }
+    }
     fn paint_body(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,feather:f32){
         let skin=self.settings.skin;
         if skin==model::Skin::Fluid {
