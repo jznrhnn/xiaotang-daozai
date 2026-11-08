@@ -1647,10 +1647,6 @@ impl App {
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
         if let Some(r)=notice_shape {self.paint_body(&painter,r,5.0,8.0,12.5,feather);}
-        let ai_edge=self.ai_assistant.edge_alert();
-        if let Some((status,animate))=ai_edge {
-            self.paint_ai_edge(&painter,body,flare,flare_h,radius,status,animate);
-        }
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
 
         // 内容只随形体「揭开」：不缩放，按面板裁剪，到 55% 才开始淡入
@@ -1728,7 +1724,8 @@ impl App {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
             let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{((WIN_W-32.0)/self.resident.target.width).min(1.0)};
-            self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t);
+            let color=self.ai_assistant.eye_status().map(|status|crate::ai_assistant_ui::light_color(status,!matches!(self.settings.skin,model::Skin::Cream|model::Skin::GlassLight)));
+            if let Some(range)=self.pet.draw_with_ai_status(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,color,self.ai_assistant.eye_status()==Some(crate::ai_assistant::Status::Running)){keep_colors.push(range);}
         }
         if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
@@ -1829,11 +1826,11 @@ impl App {
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
-            || ai_edge.is_some_and(|(_,animate)|animate);
-        let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+        let ai_scanning=self.ai_assistant.eye_status()==Some(crate::ai_assistant::Status::Running);
+        let animating=transitioning || ambient || pet_visible && (self.pet.state!=PetState::Sleeping || ai_scanning);
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
+        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping&&!ai_scanning{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
@@ -2060,25 +2057,6 @@ impl App {
     }
 
     /// 绘制岛体（或通知胶囊）的本体：经典皮肤为纯黑；毛玻璃为着色底 + 顶部柔光 + 边缘高光。
-    fn paint_ai_edge(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,status:crate::ai_assistant::Status,animate:bool) {
-        let color=crate::ai_assistant_ui::light_color(status,true);
-        let strength=if animate{0.66+0.34*(self.t as f32*std::f32::consts::TAU/2.4).sin().mul_add(0.5,0.5)}else{0.8};
-        // Keep the soft rim inside the existing native window mask, including side docks.
-        for (width,opacity) in [(7.0_f32,0.12_f32),(3.5,0.3),(1.4,0.95)] {
-            let width=width.min(rect.width().min(rect.height())*0.4);
-            let inset=width*0.5+0.3;
-            let edge=rect.shrink(inset);
-            if edge.width()<=0.0||edge.height()<=0.0{continue;}
-            let stroke=egui::Stroke::new(width,paint::alpha(color,strength*opacity));
-            let radius=(radius-inset).max(0.5);
-            if self.settings.island_shape==model::IslandShape::Pill || flare==0.0&&!self.side() {
-                painter.rect_stroke(edge,radius,stroke,egui::StrokeKind::Inside);
-            } else {
-                let points=if self.side(){shape::outline_docked(edge,self.dock(),flare,flare_h,radius)}else{shape::outline(edge,flare,flare_h,radius)};
-                painter.add(egui::Shape::closed_line(points,stroke));
-            }
-        }
-    }
     fn paint_body(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,feather:f32){
         let skin=self.settings.skin;
         if skin==model::Skin::Fluid {
@@ -2346,9 +2324,7 @@ impl App {
     // ---------------------------------------------------------------
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         let ai=crate::quota_ui::bar_tooltip(c.hit(350.0,4.0,26.0,28.0,"ai-assistant-open"),self.ai_assistant.status_tooltip());
-        let color=crate::ai_assistant_ui::light_color(self.ai_assistant.indicator_status(),true);
         c.text(363.0,23.0,"AI",11.5,W::Bold,if ai.hovered(){theme::WHITE}else{theme::GRAY},H::Center);
-        c.circle(374.0,8.0,3.0,color);
         if ai.clicked(){self.show_page(AI_TASKS_PAGE);}
         let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
         let (hover,press)=c.hover_t(&settings);
