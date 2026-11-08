@@ -7,6 +7,8 @@ use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
+#[path = "ai_tasks_ui.rs"]
+mod tasks_window;
 
 struct EdgeNotice {
     status: Status,
@@ -16,6 +18,9 @@ struct EdgeNotice {
 
 #[derive(Default)]
 pub(crate) struct State {
+    pub tasks_open: bool,
+    tasks_focus: bool,
+    inbox: tasks_window::Inbox,
     pub open: bool,
     pub busy: bool,
     pub unread: bool,
@@ -36,6 +41,7 @@ pub(crate) struct State {
     note: String,
     error: bool,
     pending_input: Option<String>,
+    pending_task_chat: Option<(Provider, String)>,
     refresh: Option<Instant>,
     monitor: Option<crate::ai_monitor::Monitor>,
     external_tasks: Vec<Task>,
@@ -135,13 +141,14 @@ impl State {
             Status::Waiting => "需要用户确认，请在原客户端处理",
             status => status.label(),
         };
-        format!("AI 任务状态\n当前：{current}\n\n红灯：执行失败\n绿灯：执行完成\n橙灯：需要用户确认\n蓝灯：正在执行\n灰灯：空闲、已停止或状态未知\n\n点击打开 AI 助手")
+        format!("AI 任务状态\n当前：{current}\n未读：{} 个任务\n\n红灯：执行失败\n绿灯：执行完成\n橙灯：需要用户确认\n蓝灯：正在执行\n灰灯：空闲、已停止或状态未知\n\n点击打开 AI 任务窗口", self.inbox.unread_count())
     }
     pub fn open(&mut self, ctx: &egui::Context) {
+        self.open_chat(ctx);
+    }
+    fn open_chat(&mut self, ctx: &egui::Context) {
         self.open = true;
         self.focus = true;
-        self.unread = false;
-        self.acknowledge_edge();
         if self.service.is_none() && !cfg!(test) {
             self.discover(ctx);
         }
@@ -248,6 +255,7 @@ impl State {
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
+        self.load_inbox();
         if self.monitor.is_none() && !cfg!(test) {
             self.all_clients = true;
             self.monitor_disabled = crate::model::config_dir()
@@ -312,6 +320,7 @@ impl State {
         } else if self.open {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
+        self.inbox.flush();
     }
     fn receive_monitor(&mut self, update: crate::ai_monitor::Update) {
         self.edge_notices.retain(|id, notice| {
@@ -322,6 +331,13 @@ impl State {
                         && task.status == Status::Waiting
                 })
         });
+        for task in &update.tasks {
+            let live = update
+                .changed
+                .iter()
+                .any(|(p, id, _)| *p == task.provider && id == &task.id);
+            self.inbox.record(task.clone(), live);
+        }
         for (provider, id, status) in update.changed {
             // External events never change the send/cancel state of an island chat.
             if self.busy && self.selected.as_deref() == Some(&id) && self.provider == Some(provider)
@@ -336,6 +352,7 @@ impl State {
         }
         self.external_tasks = update.tasks;
         self.monitor_note = update.note;
+        self.unread = self.inbox.unread_count() > 0;
     }
     fn receive(&mut self, event: Event) {
         match event {
@@ -353,7 +370,11 @@ impl State {
                     "已识别本机客户端，直接复用各自的登录状态".into()
                 };
                 self.error = false;
-                self.list(false);
+                if let Some((provider, id)) = self.pending_task_chat.take() {
+                    self.choose(provider, id);
+                } else {
+                    self.list(false);
+                }
             }
             Event::Tasks {
                 provider,
@@ -373,6 +394,7 @@ impl State {
                     self.tasks.retain(|t| t.provider != provider);
                 }
                 for task in tasks {
+                    self.inbox.record(task.clone(), false);
                     self.observe_edge(&task.id, task.status, false);
                     if let Some(existing) = self
                         .tasks
@@ -474,7 +496,9 @@ impl State {
                 if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
                     task.status = status;
                     task.updated = chrono::Utc::now().timestamp();
+                    self.inbox.record(task.clone(), true);
                 }
+                self.unread = self.inbox.unread_count() > 0;
                 if self.selected.as_deref() == Some(&id) {
                     self.busy = matches!(status, Status::Running | Status::Waiting);
                     self.note = note;
@@ -501,6 +525,7 @@ impl State {
         }
     }
     fn upsert(&mut self, task: Task) {
+        self.inbox.record(task.clone(), false);
         if let Some(existing) = self
             .tasks
             .iter_mut()
@@ -1054,6 +1079,8 @@ fn update_text(target: &mut String, text: &str, replace: bool) {
 impl crate::app::App {
     pub fn ai_assistant_ui(&mut self, ctx: &egui::Context) {
         self.ai_assistant.poll(ctx);
+        #[cfg(test)]
+        self.ai_tasks_ui(ctx);
         if !self.ai_assistant.open {
             return;
         }
@@ -1071,9 +1098,6 @@ impl crate::app::App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 close = ctx.input(|i| i.viewport().close_requested());
-                if ctx.input(|i| i.viewport().focused == Some(true)) {
-                    self.ai_assistant.acknowledge_edge();
-                }
                 let original = ctx.style();
                 let mut style = (*original).clone();
                 let dark = self
