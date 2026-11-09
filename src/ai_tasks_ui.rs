@@ -149,6 +149,12 @@ impl State {
                 theme::GRAY,
                 H::Left,
             );
+            c.text(274.0,24.0,"全部已读",10.0,W::Regular,theme::GRAY,H::Left);
+            if c.hit(268.0,9.0,64.0,22.0,"ai-tasks-read-all")
+                .on_hover_text("清除岛仔中的全部任务未读提醒；需要确认的任务仍保留橙色状态")
+                .clicked() {
+                self.read_all_tasks();
+            }
         }
         let mut items: Vec<_> = self
             .inbox
@@ -238,13 +244,16 @@ impl State {
                             &item.task.title,
                             10.5,
                             if item.unread { W::Bold } else { W::Regular },
-                            201.0,
+                            174.0,
                         ),
                         10.5,
                         if item.unread { W::Bold } else { W::Regular },
-                        theme::WHITE,
+                        if item.unread {theme::WHITE} else {Color32::from_gray(190)},
                         H::Left,
                     );
+                    if item.unread {
+                        row.text(247.0,14.0,"未读",9.0,W::Semibold,theme::BLUE,H::Left);
+                    }
                     row.text(
                         327.0,
                         14.0,
@@ -320,6 +329,20 @@ impl State {
         }
         self.unread = self.inbox.unread_count() > 0;
     }
+    pub(super) fn read_native_task(&mut self,provider:Provider,id:&str,updated:i64) {
+        let key=format!("{}:{id}",provider.name());
+        if self.inbox.items.get(&key).is_some_and(|item|item.unread && item.task.status==Status::Completed && item.task.updated<=updated) {
+            self.read_task(&key);
+        }
+    }
+    fn read_all_tasks(&mut self) {
+        for item in self.inbox.items.values_mut() {
+            item.unread=false;
+        }
+        self.acknowledge_edge();
+        self.inbox.save();
+        self.unread=false;
+    }
     fn read_task(&mut self, key: &str) {
         let Some(item) = self.inbox.items.get_mut(key) else {
             return;
@@ -355,12 +378,7 @@ impl State {
                         self.open_chat(ctx);
                     }
                     if ui.button("全部标为已读").clicked() {
-                        for item in self.inbox.items.values_mut() {
-                            item.unread = false;
-                        }
-                        self.acknowledge_edge();
-                        self.inbox.save();
-                        self.unread = false;
+                        self.read_all_tasks();
                     }
                 });
                 ui.add_space(6.0);
@@ -590,6 +608,33 @@ impl crate::app::App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ai_native_read_receipt_cannot_clear_a_newer_result_or_approval() {
+        let mut state=super::State::default();
+        state.inbox.record(task("one",super::Status::Completed,3),true);
+        state.read_native_task(super::Provider::Codex,"one",2);
+        assert_eq!(state.eye_status(),Some(super::Status::Completed));
+        state.read_native_task(super::Provider::Codex,"one",3);
+        assert_eq!(state.eye_status(),None);
+        state.inbox.record(task("one",super::Status::Waiting,4),true);
+        state.read_native_task(super::Provider::Codex,"one",4);
+        assert_eq!(state.eye_status(),Some(super::Status::Waiting));
+    }
+    #[test]
+    fn ai_read_all_clears_green_until_a_new_completion() {
+        let mut state=super::State::default();
+        state.inbox.record(task("one",super::Status::Completed,1),true);
+        state.inbox.record(task("two",super::Status::Completed,1),true);
+        assert_eq!(state.eye_status(),Some(super::Status::Completed));
+        state.read_all_tasks();
+        assert_eq!(state.inbox.unread_count(),0);
+        assert_eq!(state.eye_status(),None);
+        state.inbox.record(task("one",super::Status::Completed,1),false);
+        assert_eq!(state.eye_status(),None);
+        state.inbox.record(task("one",super::Status::Running,2),true);
+        state.inbox.record(task("one",super::Status::Completed,3),true);
+        assert_eq!(state.eye_status(),Some(super::Status::Completed));
+    }
     use super::*;
     #[test]
     fn eyes_show_unread_results_then_return_to_running_or_normal() {

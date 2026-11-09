@@ -376,6 +376,9 @@ impl State {
                 self.unread = true;
             }
         }
+        for (provider,id,updated) in update.read {
+            self.read_native_task(provider,&id,updated);
+        }
         self.external_tasks = update.tasks;
         self.monitor_note = update.note;
         self.unread = self.inbox.unread_count() > 0;
@@ -1294,6 +1297,7 @@ mod tests {
         state.selected = Some("island-chat".into());
         state.provider = Some(Provider::Codex);
         state.receive_monitor(crate::ai_monitor::Update {
+            read:vec![],
             tasks: vec![Task {
                 provider: Provider::Claude,
                 id: "external-chat".into(),

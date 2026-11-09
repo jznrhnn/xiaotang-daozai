@@ -11,12 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path="ai_native_read.rs"]
+mod native_read;
+
 const TAIL: u64 = 2 * 1024 * 1024;
 const MAX_RECORD: usize = 256 * 1024;
 pub(crate) struct Update {
     pub tasks: Vec<Task>,
     pub changed: Vec<(Provider, String, Status)>,
     pub note: String,
+    pub read: Vec<(Provider,String,i64)>,
 }
 pub(crate) struct Monitor {
     pub rx: Receiver<Update>,
@@ -108,7 +112,7 @@ try {
   $id = $v.session_id
   if (-not $id) { $id = $v.thread_id }
   if (-not $id -or $id -notmatch '^[a-zA-Z0-9_-]{1,160}$') { exit 0 }
-  $out = @{ provider=$Provider; event=$Event; id=$id; at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); agent_id=$v.agent_id; notification_type=$v.notification_type; tool_name=$v.tool_name; stop_reason=$v.stop_reason }
+  $out = @{ provider=$Provider; event=$Event; id=$id; at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); agent_id=$v.agent_id; notification_type=$v.notification_type; tool_name=$v.tool_name; stop_reason=$v.stop_reason; turn_id=$v.turn_id }
   $queue = Join-Path $PSScriptRoot 'events'
   [IO.Directory]::CreateDirectory($queue) | Out-Null
   if ([IO.Directory]::GetFiles($queue, '*.json').Length -ge 1024) { exit 0 }
@@ -323,6 +327,7 @@ struct Entry {
     stopping: bool,
     event_at: i64,
     hook_at: i64,
+    turn_id: Option<String>,
 }
 struct Watcher {
     files: HashMap<PathBuf, Cursor>,
@@ -331,6 +336,7 @@ struct Watcher {
     dirty: bool,
     last_discovery: Option<Instant>,
     paths: Vec<(Provider, PathBuf)>,
+    last_read: Vec<(Provider,String,i64)>,
 }
 impl Default for Watcher {
     fn default() -> Self {
@@ -341,6 +347,7 @@ impl Default for Watcher {
             dirty: true,
             last_discovery: None,
             paths: vec![],
+            last_read: vec![],
         }
     }
 }
@@ -595,7 +602,21 @@ impl Watcher {
         tasks.truncate(200);
         let active: HashSet<_> = tasks.iter().map(|t| key(t.provider, &t.id)).collect();
         self.entries.retain(|id, _| active.contains(id));
+        let mut read=Vec::new();
+        for (provider,home) in homes {
+            if *provider!=Provider::Codex {continue;}
+            let receipts=native_read::receipts(home);
+            for entry in self.entries.values() {
+                if entry.task.provider==Provider::Codex && entry.task.status==Status::Completed
+                    && entry.turn_id.as_ref().is_some_and(|turn|receipts.get(&entry.task.id)==Some(turn)) {
+                    read.push((Provider::Codex,entry.task.id.clone(),entry.task.updated));
+                }
+            }
+        }
+        read.sort_by(|a,b|a.1.cmp(&b.1));
+        if read!=self.last_read {self.dirty=true;self.last_read=read.clone();}
         Update {
+            read,
             tasks,
             changed,
             note: note.into(),
@@ -633,6 +654,7 @@ impl Watcher {
                 stopping: false,
                 event_at: 0,
                 hook_at: 0,
+                turn_id: None,
             });
         if at < entry.event_at || (!hook && at <= entry.hook_at) {
             return;
@@ -715,6 +737,13 @@ impl Watcher {
             }
             _ => return,
         };
+        if provider==Provider::Codex {
+            if let Some(turn)=v["payload"]["turn_id"].as_str().or_else(||v["turn_id"].as_str()) {
+                entry.turn_id=Some(turn.to_owned());
+            } else if matches!(event,"task_started"|"UserPromptSubmit") {
+                entry.turn_id=None;
+            }
+        }
         entry.event_at = at;
         if hook {
             entry.hook_at = at;
@@ -934,11 +963,12 @@ mod tests {
         assert_eq!(first.tasks[0].status, Status::Running);
         w.first = false;
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{}", json!({"timestamp":(now + chrono::Duration::milliseconds(10)).to_rfc3339(),"type":"event_msg","payload":{"type":"task_complete"}})).unwrap();
+        writeln!(file, "{}", json!({"timestamp":(now + chrono::Duration::milliseconds(10)).to_rfc3339(),"type":"event_msg","payload":{"type":"task_complete","turn_id":"completed-turn"}})).unwrap();
         drop(file);
         let update = w.scan(&homes, &root, false, "test");
         assert_eq!(update.changed.len(), 1);
         assert_eq!(update.changed[0].2, Status::Completed);
+        assert_eq!(w.entries.values().next().unwrap().turn_id.as_deref(),Some("completed-turn"));
         assert!(w.scan(&homes, &root, false, "test").changed.is_empty());
         fs::remove_file(path).unwrap();
         let _ = fs::remove_dir(sessions);

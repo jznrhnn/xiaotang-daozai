@@ -1716,6 +1716,15 @@ impl App {
             self.fluid.advance(env.t,dt);
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
+        // 极简细条只给下半圈着色，保留两端圆角；放在内容换色范围之外。
+        if minimal_pill {
+            if let Some(status)=self.ai_assistant.eye_status() {
+                let color=crate::ai_assistant_ui::light_color(status,!matches!(self.settings.skin,model::Skin::Cream|model::Skin::GlassLight));
+                let lower_half=Rect::from_min_max(Pos2::new(panel.left(),panel.center().y),panel.max);
+                painter.with_clip_rect(painter.clip_rect().intersect(lower_half))
+                    .rect_stroke(panel,radius,egui::Stroke::new(1.0,color),egui::StrokeKind::Inside);
+            }
+        }
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
 
         // 内容只随形体「揭开」：不缩放，按面板裁剪，到 55% 才开始淡入

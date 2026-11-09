@@ -28,6 +28,21 @@ fn ai_eyes_gallery() {
 }
 
 #[test]
+#[ignore="按需导出 AI 极简边框：DAOZAI_AI_EYES_PREVIEW_DIR"]
+fn ai_minimal_border_gallery() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_AI_EYES_PREVIEW_DIR").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    for (name,status) in [("running",crate::ai_assistant::Status::Running),("complete-unread",crate::ai_assistant::Status::Completed),("waiting",crate::ai_assistant::Status::Waiting),("failed",crate::ai_assistant::Status::Failed)] {
+        for (skin_name,skin) in [("dark",crate::model::Skin::Classic),("light",crate::model::Skin::Cream)] {
+            let mut h=H::new();h.app.set_minimal(true);h.app.settings.skin=skin;h.app.ai_assistant.preview_eye_status(status);
+            let mut raster=feature_raster();shoot_feature(&mut h,&mut raster,&dest,&format!("minimal-{name}-{skin_name}"),75,None,"2026-11-09");
+            let path=dest.join(format!("minimal-{name}-{skin_name}.png"));let image=image::open(&path).unwrap().to_rgba8();
+            image::imageops::crop_imm(&image,280,0,320,80).to_image().save(path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn ai_island_task_row_opens_only_that_task_and_scroll_keeps_page() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.app.ai_assistant.preview_tasks();h.app.ai_assistant.tasks_open=false;
@@ -48,7 +63,7 @@ fn ai_island_tasks_gallery() {
     for (name,skin) in [("island-tasks-dark",crate::model::Skin::Classic),("island-tasks-light",crate::model::Skin::Cream)] {
         let mut h=H::new();h.app.settings.skin=skin;h.app.settings.pet=false;h.app.ai_assistant.preview_tasks();h.app.ai_assistant.tasks_open=false;
         h.app.show_page(crate::app::AI_TASKS_PAGE);let mut raster=feature_raster();
-        shoot_feature(&mut h,&mut raster,&dest,name,60,Some(H::local(290.0,20.0)),"2026-11-08");
+        shoot_feature(&mut h,&mut raster,&dest,name,60,Some(H::local(210.0,130.0)),"2026-11-08");
     }
 }
 
