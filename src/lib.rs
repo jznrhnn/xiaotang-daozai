@@ -28,6 +28,8 @@ mod ai_assistant;
 mod ai_monitor;
 mod ai_assistant_ui;
 mod mail_reader;
+pub mod mail_manage;
+mod mail_manage_ui;
 pub mod clipboard;
 pub mod side_dock;
 mod task_picker;
@@ -38,6 +40,7 @@ mod quota_ui;
 mod pages;
 mod extras;
 mod pet;
+mod pet_expressions;
 mod bar_layout;
 mod resident_settings;
 mod avoidance;
@@ -55,6 +58,8 @@ pub mod smtc;
 pub mod theme;
 pub mod settings_theme;
 mod updates;
+#[cfg(windows)]
+pub use updates::record_install_size;
 
 #[cfg(windows)]
 pub mod native;

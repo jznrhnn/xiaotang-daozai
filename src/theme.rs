@@ -109,43 +109,28 @@ fn font_dirs() -> Vec<PathBuf> {
 
 /// 装载三档字重。每档 = 拉丁字体 + 中文回退 + 韩文回退；缺哪个就跳过，最后兜底 egui 内置字体。
 pub fn load_fonts(ctx: &egui::Context) {
-    install_font_texture_guard(ctx);
     ctx.set_fonts(shared_fonts().clone());
 }
 
-/// egui 0.31 applies a partial atlas delta before its multi-DPI full upload.
-/// On startup/DPI switches the shared texture may still have another atlas's
-/// dimensions. Synchronize its storage first, across root and child viewports.
-fn install_font_texture_guard(ctx: &egui::Context) {
-    let id=egui::Id::new("daozai-font-texture-guard");
-    let installed=ctx.data_mut(|data| {let installed=data.get_temp::<bool>(id).unwrap_or(false);data.insert_temp(id,true);installed});
-    if installed { return; }
-    ctx.on_end_pass("daozai-font-texture-guard",Arc::new(|ctx| {
-        let size=ctx.fonts(|fonts|fonts.font_image_size());
-        let manager=ctx.tex_manager();
-        let metadata=manager.read().meta(egui::TextureId::default()).map(|meta|(meta.size,meta.options));
-        if let Some((allocated,options))=metadata {
-            if allocated!=size {
-                let image=ctx.fonts(|fonts|fonts.image());
-                manager.write().set(egui::TextureId::default(),egui::epaint::ImageDelta::full(image,options));
-            }
-        }
-    }));
-}
-
+// The vendored egui initializes each DPI atlas before applying partial updates.
 #[cfg(test)]
 mod atlas_guard_tests {
     use super::*;
     #[test]
-    fn partial_font_update_recovers_after_texture_storage_is_reset() {
-        let ctx=egui::Context::default();install_font_texture_guard(&ctx);
-        let draw=|ctx:&egui::Context,text:&str|{egui::CentralPanel::default().show(ctx,|ui|{ui.label(text);});};
-        let _=ctx.run(Default::default(),|ctx|draw(ctx,"warmup"));
-        ctx.tex_manager().write().set(egui::TextureId::default(),egui::epaint::ImageDelta::full(egui::FontImage::new([0,0]),egui::TextureOptions::LINEAR));
-        let output=ctx.run(Default::default(),|ctx|draw(ctx,"new glyphs: ABC 123"));
-        let size=ctx.fonts(|fonts|fonts.font_image_size());
-        assert_eq!(ctx.tex_manager().read().meta(egui::TextureId::default()).unwrap().size,size);
-        assert!(output.textures_delta.set.iter().any(|(id,delta)|*id==egui::TextureId::default()&&delta.pos.is_none()&&delta.image.size()==size));
+    fn font_updates_remain_in_bounds_when_dpi_changes() {
+        let ctx=egui::Context::default();load_fonts(&ctx);
+        for (index,scale) in [1.0,1.25,1.5,1.0,1.5].into_iter().enumerate() {
+            ctx.set_pixels_per_point(scale);
+            let output=ctx.run(Default::default(),|ctx|{egui::CentralPanel::default().show(ctx,|ui|{ui.label(format!("字体更新测试 {index}"));});});
+            let manager=ctx.tex_manager();let manager=manager.read();
+            for (id,delta) in &output.textures_delta.set {
+                if let Some(pos)=delta.pos {
+                    let size=manager.meta(*id).unwrap().size;
+                    assert!(pos[0]+delta.image.width()<=size[0]);
+                    assert!(pos[1]+delta.image.height()<=size[1]);
+                }
+            }
+        }
     }
 }
 
