@@ -104,12 +104,17 @@ pub(crate) struct Snapshot {
     passwords: BTreeMap<String, String>,
 }
 fn settings_map(raw: &str) -> BTreeMap<String, String> {
-    raw.trim_start_matches('\u{feff}')
+    let fields: BTreeMap<String, String> = raw.trim_start_matches('\u{feff}')
         .lines()
         .filter_map(|line| line.split_once('='))
-        .filter(|(k, _)| SYNC_KEYS.contains(&k.trim()))
         .map(|(k, v)| (k.trim().into(), v.trim().into()))
-        .collect()
+        .collect();
+    let legacy_fork = !fields.contains_key("show_weather");
+    fields.into_iter().filter(|(key, _)| SYNC_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| {
+            let value = crate::model::migrate_nine_page_field(&key, &value, legacy_fork).unwrap_or(value);
+            (key, value)
+        }).collect()
 }
 fn read_optional(path: &Path, default: &[u8]) -> Result<Vec<u8>, String> {
     match fs::read(path) {
@@ -146,6 +151,9 @@ impl Snapshot {
     }
     fn scoped(mut self,include_passwords:bool)->Self {
         self.settings.retain(|key,_|SYNC_KEYS.contains(&key.as_str()));
+        for (key, value) in &mut self.settings {
+            if let Some(migrated) = crate::model::migrate_nine_page_field(key, value, true) { *value = migrated; }
+        }
         if !include_passwords {self.passwords.clear();}
         self
     }
@@ -239,8 +247,12 @@ impl Snapshot {
                 settings.insert(k.trim().into(), v.trim().into());
             }
         }
+        // Cloud snapshots with nine pages were written by this fork before Weather was added.
         for (key,value) in &self.settings {
-            if SYNC_KEYS.contains(&key.as_str()) {settings.insert(key.clone(),value.clone());}
+            if SYNC_KEYS.contains(&key.as_str()) {
+                let value = crate::model::migrate_nine_page_field(key, value, true).unwrap_or_else(|| value.clone());
+                settings.insert(key.clone(),value);
+            }
         }
         let text: String = settings.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
         let accounts = serde_json::to_vec(&self.accounts).map_err(|_| "邮箱配置编码失败")?;
