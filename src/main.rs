@@ -162,7 +162,7 @@ impl Shell {
             bt: Vec::new(),
             bt_ready: false,
             volume_quiet: PollClock::default(),
-            mail: daozai::mail::Service::start(),
+            mail: {let ctx=cc.egui_ctx.clone();daozai::mail::Service::start_with_wake(move||ctx.request_repaint())},
             mail_sig: (false, 0, Vec::new()),
             cal: daozai::calendar::Service::start(),
             cal_sig: (Vec::new(), true),
@@ -447,7 +447,7 @@ impl eframe::App for Shell {
             self.mail.sync(accounts,sig.1);
             self.mail_sig=sig;
         }
-        while let Some(ev)=self.mail.try_recv(){self.app.mail_event(ev);}
+        while let Some(ev)=self.mail.try_recv(){self.app.mail_event_at(ev,env.t);}
         // 日程连接或自动同步开关变化时下发给工作线程。
         // 录制/截图演示用的是假账号，别让真服务去连（会立刻失败、把状态改成红色）。
         #[cfg(feature="record")]

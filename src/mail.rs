@@ -808,13 +808,18 @@ mod service {
 
     impl Service {
         pub fn start() -> Self {
+            Self::start_with_wake(||{})
+        }
+        pub fn start_with_wake(wake:impl Fn()+Send+'static) -> Self {
             let (ev_tx, ev_rx) = channel();
+            let (ready_tx,ready_rx)=channel();
+            let _=std::thread::Builder::new().name("daozai-mail-wake".into()).spawn(move||forward_events(ev_rx,ready_tx,wake));
             let (cmd_tx, cmd_rx) = channel();
             let _ = std::thread::Builder::new()
                 .name("daozai-mail".into())
                 .spawn(move || supervisor(cmd_rx, ev_tx));
             let (manage,done)=crate::mail_manage::start();
-            Self { cmd: cmd_tx, ev: ev_rx,manage,done }
+            Self { cmd: cmd_tx, ev: ready_rx,manage,done }
         }
 
         pub fn sync(&self, accounts: &[Account], interval_secs: u32) {
@@ -830,6 +835,9 @@ mod service {
         pub fn try_recv(&self) -> Option<Event> {
             self.done.try_recv().ok().map(Event::Managed).or_else(||self.ev.try_recv().ok())
         }
+    }
+    fn forward_events(incoming:Receiver<Event>,ready:Sender<Event>,wake:impl Fn()){
+        while let Ok(event)=incoming.recv(){if ready.send(event).is_err(){break;}wake();}
     }
 
     fn supervisor(cmd_rx: Receiver<Cmd>, ev: Sender<Event>) {
@@ -1075,6 +1083,7 @@ mod service {
     #[cfg(test)]
     mod receiving_tests {
         use super::*;
+        #[test]fn mail_arrival_is_queued_before_waking_the_interface(){let(tx,rx)=channel();let(out,ready)=channel();let(wake,called)=channel();let worker=std::thread::spawn(move||forward_events(rx,out,move||{wake.send(()).unwrap();}));tx.send(Event::Status{account:"test@example.com".into(),status:Status::Ready}).unwrap();called.recv_timeout(Duration::from_secs(2)).unwrap();assert!(matches!(ready.try_recv(),Ok(Event::Status{status:Status::Ready,..})));drop(tx);worker.join().unwrap();}
         use std::{io::{BufRead,Write},net::{TcpListener,TcpStream}};
 
         #[derive(Clone,Copy)]
@@ -1471,6 +1480,7 @@ mod service {
         pub fn start() -> Self {
             Self
         }
+        pub fn start_with_wake(_wake:impl Fn()+Send+'static)->Self{Self}
         pub fn sync(&self, _accounts: &[Account], _interval_secs: u32) {}
         pub fn test(&self, _account: Account, _password: String) {}
         pub fn manage(&self,_request:crate::mail_manage::Request){}

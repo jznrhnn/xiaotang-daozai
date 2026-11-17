@@ -18,6 +18,8 @@ pub(crate) struct Alert {
     pub duration: f64,
     pub bluetooth: Option<(crate::bt::DeviceKind, bool)>,
     pub meeting: Option<(crate::mail::Meeting, String)>,
+    pub mail_code: Option<(String,u32)>,
+    pub mail_code_shown: bool,
 }
 impl Alert {
     pub(crate) fn messenger(&self)->Option<crate::app::Messenger>{
@@ -208,15 +210,24 @@ impl App {
             at: self.t,
             duration: if transient { 2.5 } else { 8.0 },
             bluetooth: None,
-            meeting: None,
+            meeting: None, mail_code:None,mail_code_shown:false,
         };
         self.enqueue_alert(a, system);
+    }
+    pub(crate) fn mail_code_alert(&mut self,key:(String,u32),body:String){
+        let a=Alert{source:AlertSource::Internal,title:"邮件验证码".into(),body,page:5,at:self.t,duration:self.settings.mail_code_popup_seconds.clamp(5,300) as f64,bluetooth:None,meeting:None,mail_code:Some(key),mail_code_shown:false};
+        self.enqueue_alert(a.clone(),false);
+        if self.settings.notifications{
+            self.alerts.retain(|v|v.mail_code.is_none());
+            if let Some(old)=self.notice.take(){if old.mail_code.is_none(){self.alerts.push_front(old);}}
+            self.notice=Some(a);
+        }
     }
     pub(crate) fn meeting_alert(&mut self, meeting: crate::mail::Meeting, source: String, page: usize) {
         self.enqueue_alert(Alert {
             source: AlertSource::Internal,
             title: "会议提醒".into(), body: format!("{} · {} · {}", meeting.title, meeting.at, source),
-            page, at: self.t, duration: 12.0, bluetooth: None, meeting: Some((meeting, source)),
+            page, at: self.t, duration: 12.0, bluetooth: None, meeting: Some((meeting, source)), mail_code:None,mail_code_shown:false,
         }, true);
     }
     pub(crate) fn bluetooth_alert(&mut self, device: &crate::bt::Device, connected: bool) {
@@ -231,7 +242,7 @@ impl App {
             body: if connected { device.summary() } else { format!("{} · 已断开", device.name) },
             page: 5, at: self.t, duration: 2.5,
             bluetooth: Some((device.kind, connected)),
-            meeting: None,
+            meeting: None, mail_code:None,mail_code_shown:false,
         };
         self.enqueue_alert(a, false);
     }
@@ -291,7 +302,7 @@ impl App {
         self.mark_messenger(crate::app::Messenger::Wechat,pid,window);
         self.notification_bell_at=self.t;
         self.notification_bell_until=self.t+4.5;
-        self.enqueue_alert(Alert{source:AlertSource::Wechat,title:"微信".into(),body:"有新消息 · 请到微信查看".into(),page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None},false);
+        self.enqueue_alert(Alert{source:AlertSource::Wechat,title:"微信".into(),body:"有新消息 · 请到微信查看".into(),page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None,mail_code:None,mail_code_shown:false},false);
     }
     pub fn receive_notification(&mut self, app:String, id:String, body:String){
         if !self.settings.read_notifications || id.is_empty() || (self.settings.qq_only && id!="QQ"){return;}
@@ -307,7 +318,7 @@ impl App {
             if let Some(code)=crate::otp::extract("",&text,&[]) {text=crate::mail_privacy::mask(&text,&code.text);}
             text
         }else{"收到新通知 · 内容已隐藏".into()};
-        self.enqueue_alert(Alert{source:AlertSource::External(id),title,body,page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None},false);
+        self.enqueue_alert(Alert{source:AlertSource::External(id),title,body,page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None,mail_code:None,mail_code_shown:false},false);
     }
     pub(crate) fn tick_alerts(&mut self) {
         self.pending_messengers.retain(|u|self.settings.notifications && match u.source {
@@ -315,7 +326,7 @@ impl App {
             crate::app::Messenger::Qq=>self.settings.read_notifications && self.notification_apps.items.iter().any(|(key,_,on)|key=="QQ" && *on),
         });
         let allowed=|a:&Alert|match &a.source {
-            AlertSource::Internal=>true,
+            AlertSource::Internal=>a.mail_code.is_none()||(self.settings.notifications&&self.settings.mail_code),
             AlertSource::Wechat=>self.settings.wechat_notifications && self.settings.notifications,
             AlertSource::External(id)=>self.settings.read_notifications && (!self.settings.qq_only || id=="QQ") && self.settings.notifications && self.notification_apps.items.iter().any(|(key,_,on)|key==id && *on),
         };
@@ -330,7 +341,7 @@ impl App {
         if self
             .notice
             .as_ref()
-            .is_some_and(|a| self.t - a.at > a.duration)
+            .is_some_and(|a| (a.mail_code.is_none()||a.mail_code_shown) && self.t - a.at > a.duration)
         {
             self.notice = None;
         }
@@ -343,6 +354,22 @@ impl App {
     }
     pub(crate) fn draw_notice(&mut self, c:&Card,panel:Rect,a:&Alert,_cmds:&mut Vec<Cmd>){
         let nc=c.clipped(0.0,0.0,panel.width(),panel.height());
+        if let Some((account,uid))=&a.mail_code{
+            if let Some(current)=self.notice.as_mut().filter(|current|current.mail_code==a.mail_code) {
+                if !current.mail_code_shown {current.at=self.t;current.mail_code_shown=true;}
+            }
+            let item=self.mail.recent.iter().find(|m|m.uid==*uid&&m.account.eq_ignore_ascii_case(account)).cloned();
+            let code=item.as_ref().filter(|m|self.settings.mail_code&&!self.mail_code_hidden(m)).and_then(|m|m.code.as_deref());
+            nc.centered_text(16.0,17.0,"邮件验证码",11.0,W::Semibold,theme::GRAY,H::Left);
+            let label=code.unwrap_or("验证码已隐藏");
+            nc.centered_text(16.0,45.0,&nc.fit(label,24.0,W::Semibold,205.0),24.0,W::Semibold,theme::WHITE,H::Left);
+            if let Some(value)=code{if notice_button(&nc,250.0,32.0,66.0,"复制","mail-code-copy"){_cmds.push(Cmd::Copy(value.to_owned()));self.code_copied(value);self.notice=None;}}
+            else if notice_button(&nc,250.0,32.0,66.0,"查看","mail-code-view"){self.notice=None;self.show_page(5);}
+            nc.centered_text(16.0,70.0,&nc.fit(&a.body,10.0,W::Regular,278.0),10.0,W::Regular,theme::GRAY,H::Left);
+            if nc.hit(303.0,3.0,28.0,25.0,"mail-code-dismiss").clicked(){self.notice=None;}
+            nc.centered_text(316.0,15.0,"×",14.0,W::Regular,theme::GRAY,H::Center);
+            return;
+        }
         if let Some(source)=a.messenger(){
             messenger_icon(&nc,22.0,22.0,source);
             nc.circle(31.0,14.0,2.6,Color32::from_rgb(255,72,72));
@@ -1445,6 +1472,9 @@ impl App {
                             ui.label(egui::RichText::new("切换开关不会补交之前的本机操作。").size(11.5).color(settings_color(ctx,Color32::from_gray(195),Color32::from_gray(60))));
                             ui.separator();
                             setting_row(ui,"验证码高亮","识别到验证码时在岛上放大显示，点击即复制",&mut self.settings.mail_code);
+                            ui.separator();
+                            setting_number(ui,"验证码弹窗时长",&mut self.settings.mail_code_popup_seconds,5,300," 秒",1.0);
+                            ui.label("5–300 秒，默认 8 秒。到时自动收起卡片；复制或关闭可提前收起。仅影响之后收到的验证码提醒。");
                             ui.separator();
                             setting_choices(ui,"验证码隐藏",&mut self.settings.mail_code_hide_seconds,[30,60,300],"秒");
                             ui.label("默认 60 秒。明确有效时长更短时提前隐藏；历史邮件默认隐藏。隐藏不代表失效，主动查看后 15 秒再次隐藏。");

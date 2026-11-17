@@ -27,7 +27,7 @@ const SYNC_KEYS: &[&str] = &[
     "pet","minimal","browser_minimal","visible_pages","page_order","resident_order",
     "clock_period","clock_12h","show_battery","sound","lyrics_enabled","island_lyrics",
     "lyric_delay_ms","hide_fullscreen","focus_minutes","rest_minutes","water_minutes",
-    "serving_ml","water_start","water_end","mail_code","mail_code_hide_seconds","mail_interval",
+    "serving_ml","water_start","water_end","mail_code","mail_code_hide_seconds","mail_code_popup_seconds","mail_interval",
 ];
 
 #[derive(Clone, Default, Serialize, Deserialize)]

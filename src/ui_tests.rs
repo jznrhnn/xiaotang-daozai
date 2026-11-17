@@ -818,6 +818,7 @@ struct H {
     system_idle: Option<f64>,
     browser_at_top: Option<bool>,
     file_drop_zone:Option<Rect>,
+    notice_hit:Option<Rect>,
     hovered_files:Vec<egui::HoveredFile>,
     dropped_files:Vec<egui::DroppedFile>,
 }
@@ -828,7 +829,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(),platform_commands:vec![], bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(),platform_commands:vec![], bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,notice_hit:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -864,10 +865,11 @@ impl H {
         let animating=&mut self.animating;
         let app = &mut self.app;
         let file_drop_zone=&mut self.file_drop_zone;
+        let notice_hit=&mut self.notice_hit;
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
                 let win = Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));
-                let frame=app.frame(ui, win, &env);*region=frame.region;*hit=frame.hit;*animating=frame.animating;*file_drop_zone=frame.file_drop_zone;cmds.extend(frame.cmds);
+                let frame=app.frame(ui, win, &env);*region=frame.region;*hit=frame.hit;*animating=frame.animating;*file_drop_zone=frame.file_drop_zone;*notice_hit=frame.notice_hit;cmds.extend(frame.cmds);
             });
         });
         self.shapes=output.shapes;
@@ -2281,7 +2283,7 @@ fn mail_page_shows_code_and_copies_on_click() {
         new: true,
     });
     assert!(h.app.notification_bell_until > 0.0, "新邮件应点亮铃铛");
-    assert!(h.app.alerts.iter().any(|a|a.title=="新邮件"&&a.page==5),"新邮件应进入通知队列，不能只有收起时才可见的铃铛");
+    assert!(h.app.notice.as_ref().is_some_and(|a|a.mail_code.is_some()&&a.page==5),"新验证码应立即显示专用提醒，不能只有铃铛");
     h.app.show_page(5);
     h.hover(Pos2::new(WIN_W / 2.0, 12.0), 0.6);
     h.hover(H::local(300.0, 60.0), 0.4);
@@ -5677,7 +5679,8 @@ fn shoot_feature(h:&mut H,raster:&mut crate::preview_raster::Raster,dest:&std::p
             raster.draw(&primitives,output.pixels_per_point);
             let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
             let image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
-            let crop_h=(h.app.expanded_height()*ppp+24.0).max(330.0).min(hgt*ppp) as u32;
+            let mail_extra=if h.app.open&&h.app.notice.as_ref().is_some_and(|a|a.mail_code.is_some()){94.0*ppp}else{0.0};
+            let crop_h=(h.app.expanded_height()*ppp+mail_extra+24.0).max(330.0).min(hgt*ppp) as u32;
             image::imageops::crop_imm(&image,200,0,880,crop_h).to_image().save(dest.join(format!("{name}.png"))).unwrap();
         }
         raster.free_textures(&output.textures_delta);
@@ -6002,6 +6005,139 @@ fn new_mail_notification_masks_codes_in_sender_and_history(){
     assert!(!h.app.history.is_empty());
     for alert in h.app.alerts.iter().chain(h.app.history.iter()) {
         assert!(!alert.body.contains("123456"),"通知和历史记录不能留下验证码明文");
+    }
+}
+
+fn incoming_code_fixture(new:bool,notifications:bool,highlight:bool)->H{
+    let mut h=H::new();h.app.settings.notifications=notifications;h.app.settings.mail_code=highlight;
+    h.app.mail.accounts=vec![crate::mail::Account{email:"code@example.com".into(),provider:crate::mail::Provider::Qq,custom:None,enabled:true}];
+    h.app.mail_event(crate::mail::Event::Mail{new,item:crate::mail::Item{account:"code@example.com".into(),from:"示例服务".into(),subject:"登录验证码".into(),summary:"验证码 834921".into(),code:Some("834921".into()),received_unix:None,time:"09:41".into(),uid:42,links:vec![],meeting:None}});h
+}
+fn expand_code_fixture(h:&mut H,page:usize){
+    let notice=h.app.notice.take();h.app.show_page(page);h.app.notice=notice;
+}
+#[test]fn new_mail_code_automatically_opens_a_copyable_notice_without_opening_mail(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=incoming_code_fixture(true,true,true);
+    assert_eq!(h.app.notice.as_ref().unwrap().mail_code,Some(("code@example.com".into(),42)));assert!(!h.app.open);assert!(!h.app.compact_notices());
+    for _ in 0..75{h.frame(vec![]);}
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="834921")));
+    assert!(h.app.history.iter().all(|a|!a.body.contains("834921")));
+    h.click_text("复制");assert!(h.cmds.iter().any(|c|matches!(c,crate::app::Cmd::Copy(v) if v=="834921")));
+    for (new,notifications,highlight) in [(false,true,true),(true,false,true),(true,true,false)]{let h=incoming_code_fixture(new,notifications,highlight);assert!(h.app.notice.as_ref().is_none_or(|a|a.mail_code.is_none()));}
+}
+#[test]#[ignore="导出新邮件验证码自动提醒；DAOZAI_MAIL_CODE_PREVIEW"]
+fn mail_code_notification_gallery(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_MAIL_CODE_PREVIEW").unwrap());std::fs::create_dir_all(&dest).unwrap();
+    for(name,skin)in[("dark",crate::model::Skin::Classic),("light",crate::model::Skin::Cream)] {
+        for (layout,expanded,reader) in [("closed",false,false),("expanded",true,false),("reader",true,true)] {
+            let mut h=incoming_code_fixture(true,true,true);h.app.settings.skin=skin;h.app.settings.pet=false;
+            if expanded{expand_code_fixture(&mut h,if reader{5}else{0});}
+            if reader {h.app.page=5;h.app.mail.open_uid=Some(("code@example.com".into(),42));}
+            let mut raster=feature_raster();shoot_feature(&mut h,&mut raster,&dest,&format!("{layout}-{name}"),75,expanded.then(||H::local(180.0,40.0)),"2026-11-11");
+        }
+    }
+}
+
+#[test]
+fn mail_code_notice_starts_on_first_display_after_a_frame_gap(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=incoming_code_fixture(true,true,true);
+    h.t=10.0;h.frame(vec![]);
+    let started=h.app.notice.as_ref().expect("新卡片不能在首帧过期").at;
+    assert!(started>=10.0);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="邮件验证码")));
+    h.t=17.0;h.frame(vec![]);assert!(h.app.notice.is_some());
+    h.t=19.0;h.frame(vec![]);assert!(h.app.notice.is_none());
+}
+
+#[test]
+fn mail_code_event_after_frame_gap_uses_current_time_for_privacy(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=incoming_code_fixture(true,true,true);h.app.settings.mail_code_popup_seconds=120;
+    let mut item=h.app.mail.recent[0].clone();item.uid=43;
+    h.app.mail_event_at(crate::mail::Event::Mail{item,new:true},100.0);
+    h.t=100.0;h.frame(vec![]);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="834921")),"旧帧间隔不能让刚收到的验证码提前隐藏");
+    h.t=161.0;h.frame(vec![]);
+    assert!(h.app.notice.is_some());
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="验证码已隐藏")));
+}
+
+#[test]
+fn mail_code_notice_is_visible_when_expanded_and_keeps_one_timer(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=incoming_code_fixture(true,true,true);expand_code_fixture(&mut h,0);
+    h.hover(H::local(180.0,40.0),1.0);
+    let started=h.app.notice.as_ref().unwrap().at;
+    assert!(h.app.open);assert_eq!(h.app.page,0);
+    let title=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()=="邮件验证码"=>Some(t.visual_bounding_rect()),_=>None}).expect("展开时也要绘出验证码卡片");
+    assert!(h.region.contains_rect(title));
+    assert!(h.notice_hit.is_some_and(|r|r.contains(title.center())),"原生点击区域必须包含卡片");
+    h.t=3.0;h.app.open=false;h.cursor=None;h.frame(vec![]);
+    assert_eq!(h.app.notice.as_ref().unwrap().at,started,"收起不能重新计时");
+    h.t=9.0;h.frame(vec![]);assert!(h.app.notice.is_none());
+}
+
+#[test]
+fn mail_code_expanded_notice_can_copy_without_switching_pages(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=incoming_code_fixture(true,true,true);expand_code_fixture(&mut h,0);
+    h.hover(H::local(180.0,40.0),1.0);
+    h.click_text("复制");
+    assert!(h.cmds.iter().any(|c|matches!(c,crate::app::Cmd::Copy(value) if value=="834921")));
+    assert!(h.app.notice.is_none());assert_eq!(h.app.page,0);
+}
+
+#[test]
+fn mail_code_popup_duration_persists_and_does_not_extend_code_visibility(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=incoming_code_fixture(true,true,true);
+    assert_eq!(h.app.settings.mail_code_popup_seconds,8);
+    h.app.settings.mail_code_popup_seconds=30;
+    h.app.settings.mail_code_hide_seconds=15;
+    h.app.settings.save();
+    let saved=crate::model::Settings::load();
+    assert_eq!(saved.mail_code_popup_seconds,30);
+    assert_eq!(saved.mail_code_hide_seconds,15);
+    h.app.mail_code_alert(("code@example.com".into(),42),"合成验证码提醒".into());
+    h.frame(vec![]);
+    h.t=16.0;h.frame(vec![]);
+    assert!(h.app.notice.as_ref().is_some_and(|a|a.mail_code.is_some()),"超过原来的 8 秒仍应显示");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="验证码已隐藏")),"卡片延长不能绕过内容隐藏");
+    h.t=31.0;h.frame(vec![]);
+    assert!(h.app.notice.as_ref().is_none_or(|a|a.mail_code.is_none()),"设置的时长过后应收起");
+    let path=crate::model::config_dir().join("settings.txt");
+    for (value,expected) in [("0",5),("9999",300),("invalid",8)] {
+        std::fs::write(&path,format!("mail_code_popup_seconds={value}\n")).unwrap();
+        assert_eq!(crate::model::Settings::load().mail_code_popup_seconds,expected);
+    }
+}
+
+#[test]
+#[ignore="导出邮箱弹窗时长设置；DAOZAI_MAIL_CODE_PREVIEW"]
+fn mail_code_popup_settings_gallery(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_MAIL_CODE_PREVIEW").unwrap());std::fs::create_dir_all(&dest).unwrap();
+    for (name,theme) in [("settings-dark",crate::settings_theme::SettingsTheme::Dark),("settings-light",crate::settings_theme::SettingsTheme::Light)] {
+        let mut h=H::new();h.app.open_settings();h.app.settings_tab=7;h.app.settings.settings_theme=theme;h.app.settings.mail_code_popup_seconds=30;h.app.mail.accounts.clear();h.ctx.set_embed_viewports(false);
+        let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();
+        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+            let id=viewport.ids.this;
+            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,800.0))),viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),focused:Some(true),..Default::default()})).collect(),focused:true,..Default::default()};
+            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+        });
+        let mut raster=crate::preview_raster::Raster::new(690,800);
+        for frame in 0..5 {
+            let root=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));raster.update_textures(&root.textures_delta);
+            let child=output.lock().unwrap().take().unwrap();raster.update_textures(&child.textures_delta);
+            if frame==4 {
+                assert!(child.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="验证码弹窗时长")));
+                raster.buf.fill([0.0,0.0,0.0,1.0]);raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);image::save_buffer(dest.join(format!("{name}.png")),&rgba,690,800,image::ColorType::Rgba8).unwrap();
+            }
+            raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
+        }
     }
 }
 

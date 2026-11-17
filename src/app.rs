@@ -37,7 +37,7 @@ pub const FLARE_H: f32 = 16.0; // 外翻收敛高度
 pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
 pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，原岛仍按 WIN_W 定位。
-pub const WIN_H: f32 = 270.0;
+pub const WIN_H: f32 = 370.0; // 留出展开面板下方的验证码提醒空间
 /// 胶囊皮肤与屏幕顶边的间隙。
 pub const PILL_GAP: f32 = 6.0;
 
@@ -874,6 +874,11 @@ impl App {
     }
 
     /// 收信服务推来的事件；历史邮件静默，新邮件进入通知队列。
+    pub fn mail_event_at(&mut self,ev:mail::Event,at:f64){
+        // The shell drains events before frame(); privacy must use the current clock too.
+        self.t=at;
+        self.mail_event(ev);
+    }
     pub fn mail_event(&mut self, ev: mail::Event) {
         let watching=|email:&str|self.settings.mail_enabled && self.mail.accounts.iter().any(|a|a.enabled && a.email.eq_ignore_ascii_case(email));
         match ev {
@@ -906,7 +911,8 @@ impl App {
                     let item=&self.mail.recent[0];
                     let body=format!("{} · {}",item.from,item.subject);
                     let body=item.code.as_ref().map(|code|crate::mail_privacy::mask(&body,code)).unwrap_or(body);
-                    self.alert("新邮件",body,5,false);
+                    let code_key=(item.account.clone(),item.uid);
+                    if item.code.is_some()&&self.settings.mail_code{self.mail_code_alert(code_key,body);}else{self.alert("新邮件",body,5,false);}
                     self.notification_bell_at = self.t;
                     self.notification_bell_until = self.t + 6.0;
                 }
@@ -1402,7 +1408,7 @@ impl App {
         self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music()
             && !self.browser_minimal_active
     }
-    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
+    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||a.mail_code.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
 
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
@@ -1457,7 +1463,7 @@ impl App {
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
-        let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
+        let (width,height)=if a.mail_code.is_some(){(334.0,86.0)}else if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
     }
     pub fn set_pet(&mut self,enabled:bool) {
@@ -1603,7 +1609,7 @@ impl App {
         let hit = if side {self.side_hit_rect(win,p_prev)} else {self.hit_rect(cx, top, p_prev)};
         let previous_menu=self.shelf_menu_rect.take();
         let inside = env.cursor.is_some_and(|c| hit.contains(c) || previous_menu.is_some_and(|r|r.contains(c)));
-        let on_notice=env.cursor.is_some_and(|c|self.messenger_badge_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.contains(c)) || self.notice_rect(cx,top).is_some_and(|r|r.contains(c))||self.notice_details_rect(cx,top).is_some_and(|r|r.contains(c)));
+        let on_notice=env.cursor.is_some_and(|c|self.messenger_badge_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.contains(c)) || self.notice_rect(cx,top).is_some_and(|r|r.contains(c))||self.notice_details_rect(cx,top).is_some_and(|r|r.contains(c))||self.expanded_mail_notice_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.expand(8.0).contains(c))||self.notice.as_ref().is_some_and(|a|a.mail_code.is_some())&&self.island_rect(win,self.w.pos,self.h.pos).contains(c));
         if !inside {
             self.hover_lock = false;
         }
@@ -1835,6 +1841,16 @@ impl App {
         if self.task_dialog.is_some() && reveal>0.9 {self.task_editor_inputs(ui,origin,&mut cmds);}
         if self.calendar.draft.is_some() && reveal>0.9 {self.calendar_editor_inputs(ui,origin,&mut cmds);}
 
+        let expanded_mail_notice=self.expanded_mail_notice_rect(win,panel);
+        if let Some(rect)=expanded_mail_notice {
+            let from=crate::skin_paint::shape_count(&ctx,layer);
+            shape::shadow(&painter,rect,0.0,0.0,12.0,0.5*shadow_k);
+            painter.rect_filled(rect,12.0,self.glass_fill());
+            if glass_skin {painter.rect_stroke(rect,12.0,egui::Stroke::new(1.0_f32,self.glass_rim()),egui::StrokeKind::Inside);}
+            keep_colors.push((from,crate::skin_paint::shape_count(&ctx,layer)));
+            if let Some(notice)=self.notice.clone(){self.draw_notice(&Card::new(ui,rect.min,rect.intersect(win)),rect,&notice,&mut cmds);}
+        }
+
         // ---------- 输出 ----------
         let rel = |r: Rect| r.translate(-win.min.to_vec2());
         let mut region = if side {
@@ -1857,6 +1873,7 @@ impl App {
         if let Some(r)=messenger_rect{region=region.union(r.expand(5.0));}
         if let Some(rect)=notice_shape {region=region.union(rect.expand2(Vec2::new(12.0,8.0)));}
         if let Some(rect)=notice_details {region=region.union(rect.expand(12.0));}
+        if let Some(rect)=expanded_mail_notice {region=region.union(rect.expand(12.0));}
         // 胶囊上方留空的那一小条也要在窗口区域内，阴影才不会被截断。
         if pill && !side {region.min.y=region.min.y.min(win.top());}
         // 浅色皮肤：把这一帧岛体内容统一换成皮肤配色。
@@ -1887,6 +1904,7 @@ impl App {
                 let radius=if self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()){14.0}else{10.0};
                 shapes.push(GlassShape::Round(rel(r),radius));
             }
+            if let Some(r)=expanded_mail_notice {shapes.push(GlassShape::Round(rel(r),12.0));}
             if let Some(r)=floating_toast {shapes.push(GlassShape::Round(rel(r),11.0));}
             shapes.extend(tooltips.iter().map(|r|GlassShape::Round(rel(*r),6.0)));
             shapes
@@ -1921,7 +1939,7 @@ impl App {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
             hit: rel(if side {self.side_hit_rect(win,self.progress())} else {self.hit_rect(cx, top, self.progress())}),
-            notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
+            notice_hit:notice_shape.into_iter().chain(expanded_mail_notice).chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
             file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height())} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
             expanded: self.open,
             editing: self.is_editing() || cmds.iter().any(|cmd| matches!(cmd, Cmd::Focus)),
@@ -1929,6 +1947,13 @@ impl App {
             repaint_after,
             cmds,
         }
+    }
+
+    fn expanded_mail_notice_rect(&self,win:Rect,panel:Rect)->Option<Rect>{
+        if !self.open || !self.notice.as_ref().is_some_and(|a|a.mail_code.is_some()){return None;}
+        let width=334.0;
+        let x=(panel.center().x-width/2.0).clamp(win.left()+8.0,win.right()-width-8.0);
+        Some(Rect::from_min_size(Pos2::new(x,panel.bottom()+8.0),Vec2::new(width,86.0)))
     }
 
     fn hit_rect(&self, cx: f32, top: f32, p: f32) -> Rect {
