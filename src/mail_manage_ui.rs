@@ -56,6 +56,7 @@ impl App{
                 .is_some_and(|s|s.validity==*validity && s.entries.iter().any(|(uid,_)|*uid==item.uid))
     }
     pub(crate) fn mail_manage_mode_changed(&mut self){
+        self.mail.search=None;self.mail.search_focus=false;
         self.mail.manage.trash.clear();self.mail.manage.trash_open=false;self.mail.manage.auto_read=None;
         self.mail.open_uid=None;self.mail.reading=None;self.mail.manage.reader_identity=None;self.mail.manage.message.clear();self.mail.manage.next_refresh=0.0;
     }
@@ -193,6 +194,7 @@ impl App{
         self.mail.manage.auto_read=Some((item.account.clone(),item.uid));
     }
     pub(crate) fn mail_toggle_trash(&mut self){
+        self.mail.search=None;self.mail.search_focus=false;
         self.mail.manage.trash_open=!self.mail.manage.trash_open;self.mail.open_uid=None;
         self.mail.manage.auto_read=None;self.mail.manage.next_refresh=0.0;self.mail.manage.message.clear();
     }

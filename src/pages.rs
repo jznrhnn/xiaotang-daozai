@@ -850,7 +850,7 @@ impl App {
     // 邮件：有验证码大卡时分栏，否则显示紧凑单行列表。
     // ---------------------------------------------------------------
     fn visible_mail_code(&self)->Option<&mail::Item> {
-        self.mail.code_item().filter(|item|!self.mail.manage.trash_open && self.settings.mail_code && !self.mail_code_hidden(item))
+        self.mail.code_item().filter(|item|self.mail.search.is_none() && !self.mail.manage.trash_open && self.settings.mail_code && !self.mail_code_hidden(item))
     }
     pub(crate) fn mail_list_bounds(&self)->Rect {
         let left=if self.visible_mail_code().is_some(){182.0}else{36.0};
@@ -905,7 +905,10 @@ impl App {
         let compact=code.is_none();let row_h=if compact{21.5}else{34.0};
         let all_count=self.mail.recent.len();
         let unread=self.mail.recent.iter().filter(|m|self.mail_seen(m,Folder::Inbox)==Some(false)).count();
-        if trash{
+        let mut query_changed=false;
+        if self.mail.search.is_some(){
+            query_changed=self.mail_search_field(c,cmds);
+        }else if trash{
             c.text(list_x+6.0,47.0,&format!("{} {}",if self.settings.mail_sync_operations{"回收站"}else{"本机回收站"},self.mail.manage.trash.len()),10.5,W::Semibold,theme::WHITE,H::Left);
             c.text(375.0,47.0,"返回邮件",10.0,W::Regular,theme::BLUE,H::Right);
             if c.hit(322.0,33.0,56.0,19.0,"mail-trash-back").clicked(){self.mail_toggle_trash();return;}
@@ -918,11 +921,21 @@ impl App {
                 c.text(x+width/2.0,47.0,&label,10.0,W::Semibold,if selected{theme::WHITE}else{theme::GRAY},H::Center);
                 if c.hit(x,33.0,width,19.0,id).on_hover_text("当前加载的最近邮件").clicked(){self.mail.manage.unread_only=id=="mail-unread";}
             }
-            c.text(307.0,46.0,if self.settings.mail_sync_operations{"同步"}else{"仅本机"},8.0,W::Regular,theme::DIM,H::Center);
+            c.text(322.0,46.0,if self.settings.mail_sync_operations{"同步"}else{"仅本机"},8.0,W::Regular,theme::DIM,H::Center);
             let ready=self.mail.manage.pending.is_empty()&&self.mail.accounts.iter().any(|a|a.enabled&&self.mail.manage.data.contains_key(&(crate::mail::key(a),Folder::Inbox))&&self.mail.manage.identities.get(&crate::mail::key(a))==Some(a));
             c.text(375.0,47.0,"全部已读",10.0,W::Regular,if ready{theme::BLUE}else{theme::DIM},H::Right);
-            if c.hit(325.0,33.0,53.0,19.0,"mail-read-all").on_hover_text(if self.settings.mail_sync_operations{"将已连接邮箱的未读邮件全部标为已读"}else{"仅将岛仔当前加载的邮件标为已读，不更改邮箱"}).clicked()&&ready{
+            if c.hit(335.0,33.0,43.0,19.0,"mail-read-all").on_hover_text(if self.settings.mail_sync_operations{"将已连接邮箱的未读邮件全部标为已读"}else{"仅将岛仔当前加载的邮件标为已读，不更改邮箱"}).clicked()&&ready{
                 self.mail_manage_request(None,Folder::Inbox,Action::ReadAll);
+            }
+        }
+        if self.mail.search.is_none(){
+            let search=c.hit(291.0,33.0,19.0,19.0,"mail-search");
+            let ink=if search.hovered(){theme::WHITE}else{theme::GRAY};
+            c.ring(299.0,41.0,3.8,1.3,ink);
+            c.seg((301.8,43.8),(305.0,47.0),1.3,ink);
+            if search.on_hover_text("搜索当前文件夹中已加载的邮件").clicked(){
+                self.mail.search=Some(String::new());
+                self.mail.search_focus=true;
             }
         }
         if !trash{
@@ -934,9 +947,22 @@ impl App {
             c.text(42.0,134.0,&c.fit(&self.mail.manage.message,8.0,W::Regular,125.0),8.0,W::Regular,theme::GRAY,H::Left);
             if c.hit(40.0,123.0,130.0,16.0,"mail-manage-status").on_hover_text(format!("{}\n点击刷新邮件状态",self.mail.manage.message)).clicked(){self.mail_manage_request(None,folder,Action::Load);}
         }
-        let indices:Vec<_>=self.mail_rows().iter().enumerate().filter(|(_,m)|trash||!self.mail.manage.unread_only||self.mail_seen(m,folder)==Some(false)).map(|(i,_)|i).collect();
+        let query=self.mail.search.as_deref().unwrap_or("").to_lowercase();
+        let terms:Vec<_>=query.split_whitespace().collect();
+        let indices:Vec<_>=self.mail_rows().iter().enumerate()
+            .filter(|(_,m)|trash||self.mail.search.is_some()||!self.mail.manage.unread_only||self.mail_seen(m,folder)==Some(false))
+            .filter(|(_,m)|{
+                if terms.is_empty(){return true;}
+                let visible=self.display_mail(m);
+                let fields=[visible.subject.as_str(),visible.from.as_str(),visible.account.as_str(),visible.summary.as_ref()].map(str::to_lowercase);
+                terms.iter().all(|term|fields.iter().any(|field|field.contains(term)))
+            })
+            .map(|(i,_)|i).collect();
+        if self.mail.search.is_some(){
+            c.text(352.0,134.0,&format!("{} 个结果 · 已加载邮件",indices.len()),9.0,W::Regular,theme::GRAY,H::Right);
+        }
         if indices.is_empty(){
-            let message=if !self.mail.manage.pending.is_empty(){"正在同步邮件…"}else if trash{"回收站为空"}else if self.mail.manage.unread_only{"没有未读邮件"}else{"还没有收到邮件"};
+            let message=if !self.mail.manage.pending.is_empty(){"正在同步邮件…"}else if !terms.is_empty(){"没有找到匹配的邮件"}else if trash{"回收站为空"}else if self.mail.manage.unread_only{"没有未读邮件"}else{"还没有收到邮件"};
             c.text(list_x+6.0,80.0,message,11.0,W::Regular,theme::GRAY,H::Left);return;
         }
         let mut content=egui::Ui::new(c.ui.ctx().clone(),egui::Id::new(("mail-list",c.live)),
@@ -945,7 +971,9 @@ impl App {
         content.set_opacity(c.painter.opacity());if !c.live{content.disable();}
         content.spacing_mut().item_spacing.y=0.0;content.spacing_mut().scroll.floating=false;content.spacing_mut().scroll.bar_width=4.0*c.s;
         content.visuals_mut().widgets.inactive.bg_fill=Color32::from_gray(80);
-        egui::ScrollArea::vertical().id_salt(("mail-list-scroll",trash,self.mail.manage.unread_only)).max_height(list_bounds.height()*c.s).auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_rows(&mut content,row_h*c.s,indices.len(),|ui,range|{
+        let mut scroll=egui::ScrollArea::vertical().id_salt(("mail-list-scroll",trash,self.mail.manage.unread_only,self.mail.search.is_some()));
+        if query_changed{scroll=scroll.vertical_scroll_offset(0.0);}
+        scroll.max_height(list_bounds.height()*c.s).auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_rows(&mut content,row_h*c.s,indices.len(),|ui,range|{
             let rows:Vec<_>=range.map(|i|self.mail_rows()[indices[i]].clone()).collect();
             for raw in rows{
                 let item=self.display_mail(&raw);let hidden=self.mail_code_hidden(&raw);let seen=self.mail_seen(&raw,folder);
@@ -986,6 +1014,32 @@ impl App {
         });
     }
 
+    fn mail_search_field(&mut self,c:&Card,cmds:&mut Vec<Cmd>)->bool{
+        c.fill(36.0,33.0,300.0,19.0,6.0,theme::BTN);
+        c.text(375.0,47.0,"取消",10.0,W::Regular,theme::BLUE,H::Right);
+        let id=egui::Id::new("mail-search-field");
+        if c.hit(340.0,33.0,38.0,19.0,"mail-search-cancel").clicked(){
+            c.ui.memory_mut(|memory|memory.surrender_focus(id));
+            self.mail.search=None;
+            self.mail.search_focus=false;
+            return false;
+        }
+        if !c.live{return false;}
+        let rect=c.rect(43.0,34.0,287.0,17.0);
+        let mut input=egui::Ui::new(c.ui.ctx().clone(),egui::Id::new("mail-search-input"),
+            egui::UiBuilder::new().max_rect(rect).layer_id(c.painter.layer_id()).style(c.ui.style().clone()));
+        input.set_clip_rect(c.painter.clip_rect());
+        input.set_opacity(c.painter.opacity());
+        let field=input.put(rect,egui::TextEdit::singleline(self.mail.search.as_mut().unwrap())
+            .id(id).frame(false).margin(egui::Margin::ZERO).vertical_align(egui::Align::Center)
+            .font(theme::font(11.0*c.s,W::Regular)).text_color(theme::WHITE)
+            .hint_text(egui::RichText::new("搜索主题、发件人、邮箱或正文").color(theme::GRAY)).char_limit(200));
+        let focus=std::mem::take(&mut self.mail.search_focus);
+        if focus{field.request_focus();}
+        if focus||field.gained_focus(){cmds.push(Cmd::Focus);}
+        field.changed()
+    }
+
     /// 岛内邮件详情可滚动，也可以进入独立窗口阅读全文。
     pub(crate) fn mail_detail(&mut self, c: &Card, raw: &mail::Item, cmds: &mut Vec<Cmd>) {
         let hidden=self.mail_code_hidden(raw);
@@ -1012,8 +1066,16 @@ impl App {
         }
         let from = c.fit(&item.from, 11.5, W::Semibold, 112.0);
         c.text(46.0, 50.0, &from, 11.5, W::Semibold, theme::WHITE, H::Left);
-        let read=c.hit(266.0,42.0,60.0,14.0,("mail-read",&item.account,item.uid)).on_hover_text("在独立窗口阅读完整正文");
-        c.text(324.0,50.0,"阅读全文",10.5,W::Regular,if read.hovered(){theme::BLUE}else{theme::GRAY},H::Right);
+        if !item.summary.is_empty() {
+            let copy = c.hit(256.0, 39.0, 28.0, 18.0, ("mail-copy-body", &item.account, item.uid))
+                .on_hover_text("复制正文");
+            c.text(277.0, 50.0, "复制", 9.0, W::Regular, if copy.hovered() { theme::BLUE } else { theme::GRAY }, H::Right);
+            if copy.clicked() {
+                cmds.push(Cmd::Copy(item.summary.to_string()));
+            }
+        }
+        let read=c.hit(284.0,39.0,42.0,18.0,("mail-read",&item.account,item.uid)).on_hover_text("在独立窗口阅读完整正文");
+        c.text(326.0,50.0,"阅读全文",10.5,W::Regular,if read.hovered(){theme::BLUE}else{theme::GRAY},H::Right);
         if read.clicked(){self.mail_open_reader(raw);}
         let subject = c.fit(&item.subject, 13.5, W::Semibold, 328.0);
         c.text(46.0, 73.0, &subject, 13.5, W::Semibold, theme::WHITE, H::Left);
@@ -1034,7 +1096,12 @@ impl App {
         content.spacing_mut().scroll.bar_width=4.0*c.s;
         egui::ScrollArea::vertical().id_salt(("mail-body",&item.account,item.uid)).max_height(90.0*c.s).auto_shrink([false,false]).show(&mut content,|ui|{
             if !item.summary.is_empty() {
-                ui.add(egui::Label::new(egui::RichText::new(item.summary.as_ref()).font(c.font(12.0,W::Regular)).color(Color32::from_gray(220))).wrap());
+                let body = egui::RichText::new(item.summary.as_ref())
+                    .font(c.font(12.0, W::Regular)).color(Color32::from_gray(220));
+                let response = ui.add(egui::Label::new(body).selectable(true).wrap());
+                if response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_pressed()) {
+                    cmds.push(Cmd::Focus);
+                }
             }else if item.links.is_empty(){
                 ui.label(egui::RichText::new("（这封邮件没有正文）").font(c.font(12.0,W::Regular)).color(theme::DIM));
             }

@@ -747,6 +747,7 @@ struct H {
     hit:Rect,
     animating:bool,
     shapes:Vec<egui::epaint::ClippedShape>,
+    platform_commands: Vec<egui::OutputCommand>,
     bt: Vec<crate::bt::Device>,
     media: crate::smtc::NowPlaying,
     power: (Option<u8>, bool),
@@ -764,7 +765,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(),platform_commands:vec![], bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -807,6 +808,7 @@ impl H {
             });
         });
         self.shapes=output.shapes;
+        self.platform_commands = output.platform_output.commands;
     }
     fn hover(&mut self, p: Pos2, secs: f64) {
         self.cursor = Some(p);
@@ -2253,8 +2255,8 @@ fn mail_row_opens_summary_and_back_returns() {
     });
     h.app.show_page(5);
     h.hover(Pos2::new(WIN_W / 2.0, 12.0), 0.6);
-    h.hover(H::local(300.0, 50.0), 0.4);
-    h.click(H::local(300.0, 50.0));
+    h.hover(H::local(180.0, 65.0), 0.4);
+    h.click(H::local(180.0, 65.0));
     assert_eq!(h.app.mail.open_uid, Some(("a@qq.com".to_string(), 42)), "点邮件行应展开摘要");
     h.hover(H::local(350.0, 48.0), 0.4);
     h.click(H::local(350.0, 48.0));
@@ -4110,6 +4112,91 @@ fn reminder_picker_rejects_past_time_and_cancel_preserves_the_task(){
 }
 
 #[test]
+fn mail_search_filters_loaded_messages_and_opens_the_matching_result() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.mail.accounts = vec![crate::mail::Account {
+        custom: None, email: "work@example.com".into(), provider: crate::mail::Provider::Qq, enabled: true,
+    }];
+    h.app.mail.recent = ["项目安排", "账单提醒", "登录验证码"].into_iter().enumerate().map(|(i, subject)| crate::mail::Item {
+        received_unix: None, account: "work@example.com".into(), from: "产品团队".into(),
+        subject: subject.into(), time: "11-17 09:41".into(),
+        code: (i == 2).then(|| "274630".into()),
+        summary: ["Roadmap 评审周五举行", "本月账单", "验证码 274630"][i].into(),
+        links: vec![], meeting: None, uid: i as u32 + 1,
+    }).collect();
+    let private = h.app.mail.recent[2].clone();
+    h.app.mail.privacy.observe(&private, false, h.app.t, chrono::Utc::now().timestamp());
+    assert!(h.app.mail_code_hidden(&private));
+    h.app.show_page(5);
+    h.hover(H::local(300.0,42.0), 1.0);
+    h.click(H::local(300.0,42.0));
+    assert!(h.app.mail.search.is_some());
+    h.frame(vec![]);
+    assert!(h.ctx.memory(|m|m.has_focus(egui::Id::new("mail-search-field"))));
+    let entered = |h: &mut H, text: &str| h.frame(vec![egui::Event::Text(text.into())]);
+    entered(&mut h, "274630");
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="没有找到匹配的邮件")));
+    h.app.mail.search = Some(String::new());
+    entered(&mut h, "ROADMAP example.com");
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="项目安排")));
+    assert!(!h.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="账单提醒")));
+    h.click(H::local(180.0,65.0));
+    assert_eq!(h.app.mail.open_uid.as_ref().map(|(_,uid)|*uid),Some(1));
+    assert!(h.app.mail.reading.is_none(),"搜索结果应打开岛内详情");
+    h.app.mail.open_uid=None;
+    h.frame(vec![]);
+    assert_eq!(h.app.mail.search.as_deref(),Some("ROADMAP example.com"));
+    h.click(H::local(360.0,43.0));
+    assert!(h.app.mail.search.is_none());
+}
+
+#[test]
+fn island_mail_body_can_be_selected_and_copied_without_revealing_a_hidden_code() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    let account = "work@example.com";
+    let item = crate::mail::Item {
+        received_unix: None, account: account.into(), from: "产品团队".into(), subject: "登录验证码".into(),
+        time: "09:41".into(), code: Some("274630".into()), summary: "Your code is 274630".into(),
+        links: vec![], meeting: None, uid: 42,
+    };
+    h.app.mail.accounts = vec![crate::mail::Account {
+        custom: None, email: account.into(), provider: crate::mail::Provider::Qq, enabled: true,
+    }];
+    h.app.mail.privacy.observe(&item, false, h.app.t, chrono::Utc::now().timestamp());
+    assert!(h.app.mail_code_hidden(&item));
+    let visible = h.app.display_mail(&item);
+    h.app.mail.recent = vec![item];
+    h.app.mail.open_uid = Some((account.into(), 42));
+    h.app.show_page(5);
+    h.hover(H::local(200.0, 105.0), 1.0);
+
+    h.click_text("复制");
+    assert!(h.cmds.iter().any(|cmd| matches!(cmd, crate::app::Cmd::Copy(text)
+        if text == visible.summary.as_ref() && !text.contains("274630"))));
+
+    let body = h.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text() == visible.summary.as_ref() => Some(text.visual_bounding_rect()),
+        _ => None,
+    }).expect("岛内应显示脱敏后的正文");
+    let start = body.left_center();
+    let end = body.right_center();
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default(),
+    };
+    h.hover(start, 0.1);
+    h.frame(vec![button(start, true)]);
+    assert!(h.cmds.iter().any(|cmd| matches!(cmd, crate::app::Cmd::Focus)));
+    h.hover(end, 0.1);
+    h.frame(vec![button(end, false)]);
+    h.frame(vec![egui::Event::Copy]);
+    assert!(h.platform_commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text)
+        if text == visible.summary.as_ref() && !text.contains("274630"))), "选中的正文应进入剪贴板");
+    assert!(h.app.mail.reading.is_none(), "复制留在岛内详情");
+}
+
+#[test]
 fn full_mail_reader_keeps_the_entire_body_and_scrolls_independently(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let body=format!("{}\n最后一段：全文结束", "这是一段需要阅读的完整邮件正文。\n\n".repeat(200));
@@ -4370,8 +4457,8 @@ fn mailbox_scroll_reaches_older_mail_without_changing_pages() {
 fn mailbox_readability_gallery(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_MAIL_PREVIEW").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
-    for variant in 0..5 {
-        let multiple=variant==1;let detail=variant==2;
+    for variant in 0..9 {
+        let multiple=variant==1;let detail=variant==2 || variant>=7;
         let mut h=H::new();h.app.settings.pet=false;h.app.settings.mail_sync_operations=true;
         h.app.mail.accounts=vec![crate::mail::Account {custom: None, email:"work@qq.com".into(),provider:crate::mail::Provider::Qq,enabled:true}];
         if multiple {h.app.mail.accounts.push(crate::mail::Account {custom: None, email:"personal@gmail.com".into(),provider:crate::mail::Provider::Gmail,enabled:true});}
@@ -4392,13 +4479,27 @@ fn mailbox_readability_gallery(){
             h.app.mail.manage.data.insert(("work@qq.com".into(),crate::mail_manage::Folder::Trash),crate::mail_manage::Snapshot{validity:9,entries:vec![(1,true),(2,true)],items:vec![]});
         }
         h.app.show_page(5);
+        if matches!(variant,5|6){
+            h.app.mail.search=Some("项目".into());
+        }
+        if variant>=5 {
+            h.app.settings.settings_theme=if matches!(variant,5|7){crate::settings_theme::SettingsTheme::Light}else{crate::settings_theme::SettingsTheme::Dark};
+        }
         let ppp=1.5;let mut raster=crate::preview_raster::Raster::new((crate::app::CANVAS_W*ppp)as usize,(WIN_H*ppp)as usize);
+        let pointer = H::local(if variant==1{350.0}else{200.0}, if detail{105.0}else{64.0});
         for frame in 0..100 {
-            let t=frame as f64/60.0;let env=Env{t,clock:"09:41:00".into(),cursor:Some(H::local(if variant==1{350.0}else{200.0},64.0)),..Default::default()};
-            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(crate::app::CANVAS_W,WIN_H))),time:Some(t),events:vec![egui::Event::PointerMoved(H::local(if variant==1{350.0}else{200.0},64.0))],viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
+            let t=frame as f64/60.0;let env=Env{t,clock:"09:41:00".into(),cursor:Some(pointer),..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(crate::app::CANVAS_W,WIN_H))),time:Some(t),events:vec![egui::Event::PointerMoved(pointer)],viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
             let out=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{h.app.frame(ui,Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H)),&env);});});
             raster.update_textures(&out.textures_delta);
-            if frame==99 {raster.buf.fill([0.05,0.07,0.10,1.0]);raster.draw(&h.ctx.tessellate(out.shapes,out.pixels_per_point),out.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw((crate::app::CANVAS_W*ppp)as u32,(WIN_H*ppp)as u32,rgba).unwrap();image::imageops::crop_imm(&image,((WIN_W-PW)/2.0*ppp-10.0)as u32,0,(PW*ppp+20.0)as u32,if detail{370}else{225}).to_image().save(dest.join(if detail{"邮件详情.png"}else if variant==3{"回收站.png"}else if variant==4{"验证码分栏.png"}else if multiple{"悬停操作.png"}else{"邮箱列表.png"})).unwrap();}
+            if frame==99 {
+                let filename = match variant {
+                    1 => "悬停操作.png", 2 => "邮件详情.png", 3 => "回收站.png", 4 => "验证码分栏.png",
+                    5 => "岛内邮件搜索-light.png", 6 => "岛内邮件搜索-dark.png",
+                    7 => "邮件详情-light.png", 8 => "邮件详情-dark.png", _ => "邮箱列表.png",
+                };
+                raster.buf.fill([0.05,0.07,0.10,1.0]);raster.draw(&h.ctx.tessellate(out.shapes,out.pixels_per_point),out.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw((crate::app::CANVAS_W*ppp)as u32,(WIN_H*ppp)as u32,rgba).unwrap();image::imageops::crop_imm(&image,((WIN_W-PW)/2.0*ppp-10.0)as u32,0,(PW*ppp+20.0)as u32,if detail{370}else{225}).to_image().save(dest.join(filename)).unwrap();
+            }
             raster.free_textures(&out.textures_delta);
         }
     }

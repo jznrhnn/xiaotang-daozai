@@ -493,6 +493,8 @@ pub(crate) struct MailState {
     pub open_uid: Option<(String, u32)>,
     pub reading: Option<mail::Item>,
     pub reader_focus: bool,
+    pub search: Option<String>,
+    pub search_focus: bool,
     /// 已经提醒过的会议，键是 `UID + DTSTART`（邮件和日历两条来源共用）。
     pub fired: std::collections::HashSet<String>,
 }
@@ -1330,6 +1332,7 @@ impl App {
 
     pub fn is_editing(&self) -> bool {
         self.adding || self.editing.is_some() || self.todo_choosing || self.task_dialog.is_some() || self.calendar.draft.is_some() || self.focus_editing
+            || (self.page == 5 && self.mail.open_uid.is_none() && self.mail.search.is_some())
     }
 
     pub fn filter_todo_input(&mut self,input:&mut egui::RawInput) {
@@ -1381,6 +1384,8 @@ impl App {
 
     pub(crate) fn cancel_edit(&mut self) {
         self.focus_editing=false;
+        self.mail.search=None;
+        self.mail.search_focus=false;
         self.adding = false;
         self.editing = None;
         self.todo_choosing = false;
@@ -1609,6 +1614,9 @@ impl App {
             self.last_cursor = env.cursor;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.is_editing() {
+            if self.page == 5 && self.mail.open_uid.is_none() && self.mail.search.is_some() {
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            }
             self.cancel_edit();
         }
         if (!self.is_editing() || self.todo_choosing) && inside && self.open && self.reveal > 0.95 {
@@ -1916,7 +1924,7 @@ impl App {
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
             file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height())} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
             expanded: self.open,
-            editing: self.is_editing(),
+            editing: self.is_editing() || cmds.iter().any(|cmd| matches!(cmd, Cmd::Focus)),
             animating,
             repaint_after,
             cmds,
