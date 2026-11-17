@@ -777,6 +777,7 @@ mod open_path_tests {
 }
 
 fn main() -> std::process::ExitCode {
+    if let Some(result)=daozai::dingtalk_reply::cli(){return result;}
     diagnostics::install();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,

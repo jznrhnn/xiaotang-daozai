@@ -734,6 +734,8 @@ pub struct App {
     pub(crate) quota: crate::quota_ui::State,
     pub(crate) updates: crate::updates::State,
     pub(crate) cloud_sync: crate::cloud_sync_ui::State,
+    pub(crate) dingtalk: crate::dingtalk_ui::State,
+    pub(crate) dingtalk_bot: crate::dingtalk_bot::State,
     pub(crate) ai_assistant: crate::ai_assistant_ui::State,
     pub(crate) resident: bar::Motion,
     pub(crate) resident_power: (Option<u8>,bool),
@@ -839,6 +841,8 @@ impl App {
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
             cloud_sync: Default::default(),
+            dingtalk: Default::default(),
+            dingtalk_bot: Default::default(),
             ai_assistant: Default::default(),
             resident: Default::default(), resident_power:(None,false),
         }

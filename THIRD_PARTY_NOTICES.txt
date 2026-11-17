@@ -1,3 +1,13 @@
+OpenClaw DingTalk Channel Plugin — standalone transport adaptation
+https://github.com/soimy/openclaw-channel-dingtalk
+Copyright (c) 2026 YM Shen and contributors. MIT License.
+Based on commit 63956bc8ed9c168045a671271abb2ee1530c123d.
+Adapted quoted-ref.ts and send-service.ts concepts/code in bridge/dingtalk/protocol.mjs;
+Stream callbacks use the same dingtalk-stream SDK. No OpenClaw runtime is included.
+Retained upstream license: bridge/dingtalk/UPSTREAM-LICENSE.txt;
+distributed at components/dingtalk/UPSTREAM-LICENSE.txt.
+Node.js runtime and dependency license notices are distributed beside the bridge.
+
 fly-island
 https://github.com/flyl1u/fly-island
 微信任务栏提醒与 QQ Windows 通知接入参考其实现。

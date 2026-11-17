@@ -54,6 +54,13 @@ impl Monitor {
                     {
                         watcher.first = false;
                         watcher.dirty = false;
+                        // Publish metadata independently of the UI, so locked/occluded windows do not stall phone delivery.
+                        let phone_enabled=fs::read(crate::model::config_dir().join("dingtalk-bot-settings.json")).ok()
+                            .and_then(|bytes|serde_json::from_slice::<Value>(&bytes).ok())
+                            .is_some_and(|value| value["enabled"] == true || value["replies"] == true);
+                        if phone_enabled {
+                            if let Ok(bytes)=serde_json::to_vec(&update.tasks){let _=crate::model::atomic_write(&root.join("phone-tasks.json"),&bytes);}
+                        }
                         if events.send(update).is_err() {
                             break;
                         }
@@ -439,6 +446,44 @@ fn initial_title(provider: Provider, path: &Path) -> Option<String> {
                 .filter(|s| !s.trim().is_empty())
         })
 }
+fn reply_from_log(bytes:&[u8],updated:i64)->Option<String>{
+    let mut result=None;
+    for line in bytes.split(|b|*b==b'\n') {
+        let Ok(value)=serde_json::from_slice::<Value>(line) else{continue;};
+        if value["type"]!="event_msg"{continue;}
+        match value["payload"]["type"].as_str(){
+            Some("task_started")=>result=None,
+            Some("task_complete")=>{
+                result=if timestamp(&value)/1000>=updated-5 {
+                    value["payload"]["last_agent_message"].as_str().map(|text|text.chars().take(1500).collect())
+                }else{None};
+            },_=>{},
+        }
+    }
+    result
+}
+fn codex_tail(thread:&str)->Option<Vec<u8>>{
+    if !valid_id(thread){return None;}
+    let home=homes().into_iter().find(|(p,_)|*p==Provider::Codex)?.1;
+    let mut files=vec![];let mut budget=2000;
+    for folder in ["sessions","archived_sessions"]{walk(&home.join(folder),8,&mut files,&mut budget);}
+    let suffix=format!("{thread}.jsonl");
+    let path=files.into_iter().find(|p|p.file_name().is_some_and(|name|name.to_string_lossy().ends_with(&suffix)))?;
+    let mut file=fs::File::open(path).ok()?;
+    let len=file.metadata().ok()?.len();file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut bytes=vec![];file.take(TAIL).read_to_end(&mut bytes).ok()?;Some(bytes)
+}
+pub(crate) fn current_codex_turn(thread:&str)->Option<String>{
+    let bytes=codex_tail(thread)?;
+    bytes.split(|b|*b==b'\n').filter_map(|line|serde_json::from_slice::<Value>(line).ok())
+        .filter(|v|v["type"]=="event_msg"&&matches!(v["payload"]["type"].as_str(),Some("task_started"|"task_complete")))
+        .filter_map(|v|v["payload"]["turn_id"].as_str().map(str::to_owned)).last()
+}
+pub(crate) fn completion_summary(task:&Task)->Option<String>{
+    if task.provider!=Provider::Codex||task.status!=Status::Completed{return None;}
+    reply_from_log(&codex_tail(&task.id)?,task.updated)
+}
+
 impl Watcher {
     fn scan(
         &mut self,

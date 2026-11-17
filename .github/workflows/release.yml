@@ -23,6 +23,12 @@ jobs:
           if ("${{ github.ref_name }}" -ne "v$version") { throw '请从版本标签运行发布，标签必须与 Cargo.toml 一致' }
       - name: 检查与测试
         run: cargo +stable test --locked --all-targets --features record --target x86_64-pc-windows-msvc -- --test-threads=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - name: 构建钉钉收发组件
+        shell: pwsh
+        run: ./scripts/build-dingtalk-bridge.ps1
       - name: 构建 MSVC 安装版与免安装版
         shell: pwsh
         run: |

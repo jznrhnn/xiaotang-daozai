@@ -25,6 +25,12 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$null,[ref]$parseErrors) | Out-Null
             if ($parseErrors) { throw ($parseErrors | Out-String) }
           }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - name: 构建钉钉收发组件
+        shell: pwsh
+        run: ./scripts/build-dingtalk-bridge.ps1
       - name: 验证发布构建与打包
         shell: pwsh
         run: |

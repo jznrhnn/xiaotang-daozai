@@ -3,7 +3,7 @@ use crate::app::{App, Env, Options, PH, PW, WIN_H, WIN_W};
 use eframe::egui::{self, Pos2, Rect, Vec2};
 use std::sync::Mutex;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn ai_task_gear_opens_settings_instead_of_chat() {
@@ -6218,11 +6218,12 @@ fn settings_gallery(){
     let (w,hgt)=(width,height);
     let scale=1.5f32;
     for (mode,dark) in [(SettingsTheme::Dark,true),(SettingsTheme::Light,false)] {
-        for tab in [0usize,10,1,2,4,6,7,11,12,9] {
+        for tab in [0usize,10,1,2,4,6,7,11,12,13,9] {
             if std::env::var("DAOZAI_SETTINGS_PREVIEW_TAB").ok().and_then(|v|v.parse::<usize>().ok()).is_some_and(|only|only!=tab){continue;}
             let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(false);
             h.quota_accounts(2);
             h.app.settings.settings_theme=mode;h.app.settings_tab=tab;
+            if tab==13 {h.app.dingtalk.preview();h.app.dingtalk_bot.preview();if std::env::var_os("DAOZAI_DWS_INSTALL_PREVIEW").is_some(){h.app.dingtalk.preview_missing();}}
             if tab==12 {if let Ok(status)=std::env::var("DAOZAI_CLOUD_SYNC_PREVIEW_STATUS"){h.app.cloud_sync.preview_notice(status=="success");}}
             let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
             egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{

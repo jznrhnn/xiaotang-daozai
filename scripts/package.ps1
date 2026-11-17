@@ -35,15 +35,33 @@ try {
     if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot 'dist' }
     $outputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
     $stagingDirectory = Join-Path $outputDirectory $packageName
+    $bridgeDirectory = Join-Path $projectRoot 'prebuilt/dingtalk'
+    $bridgeFiles = @('node.exe','bridge.cjs','bridge.cjs.LEGAL.txt','UPSTREAM-LICENSE.txt','NODE-LICENSE.txt','DEPENDENCY-LICENSES.txt','build-metadata.json')
+    foreach ($name in $bridgeFiles) {
+        $item = Get-Item -LiteralPath (Join-Path $bridgeDirectory $name) -ErrorAction Stop
+        if ($item.PSIsContainer -or $item.Length -eq 0) { throw "Invalid DingTalk component file: $name" }
+    }
+    $metadata = Get-Content -LiteralPath (Join-Path $bridgeDirectory 'build-metadata.json') -Raw | ConvertFrom-Json
+    foreach ($name in @('node.exe','bridge.cjs')) {
+        $expected = $metadata.sha256.$name
+        if ($expected -notmatch '^[a-f0-9]{64}$') { throw "Missing or invalid SHA-256 for $name in DingTalk build-metadata.json" }
+        $actual = (Get-FileHash -LiteralPath (Join-Path $bridgeDirectory $name) -Algorithm SHA256).Hash
+        if ($actual -ne $expected) { throw "DingTalk component SHA-256 mismatch: $name" }
+    }
     if (Test-Path -LiteralPath $stagingDirectory) { throw 'Package directory already exists' }
     New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
     Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $stagingDirectory 'daozai.exe')
+    $stagedBridge = Join-Path $stagingDirectory 'components/dingtalk'
+    New-Item -ItemType Directory -Force -Path $stagedBridge | Out-Null
+    foreach ($name in $bridgeFiles) {
+        Copy-Item -LiteralPath (Join-Path $bridgeDirectory $name) -Destination $stagedBridge
+    }
     # ZIP 保留给免安装使用和应用内更新；普通用户只需下载安装 EXE。
     @('LICENSE','THIRD_PARTY_NOTICES.txt','README.md','CHANGELOG.md','docs','assets') | ForEach-Object {
         Copy-Item -LiteralPath (Join-Path $projectRoot $_) -Destination $stagingDirectory -Recurse
     }
     $setup = Join-Path $outputDirectory "Daozai-Setup-v$version-x64.exe"
-    & $NsisCompiler /V2 /WX "/DAPP_VERSION=$version" "/DPROJECT_DIR=$projectRoot" "/DSOURCE_EXE=$($binary.FullName)" "/DOUTPUT_FILE=$setup" (Join-Path $projectRoot 'installer\setup.nsi')
+    & $NsisCompiler /V2 /WX "/DAPP_VERSION=$version" "/DPROJECT_DIR=$projectRoot" "/DSOURCE_EXE=$($binary.FullName)" "/DDINGTALK_COMPONENTS=$stagedBridge" "/DOUTPUT_FILE=$setup" (Join-Path $projectRoot 'installer\setup.nsi')
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
     $archive = Join-Path $outputDirectory "$packageName.zip"
     Compress-Archive -LiteralPath $stagingDirectory -DestinationPath $archive

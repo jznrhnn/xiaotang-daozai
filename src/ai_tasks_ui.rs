@@ -132,6 +132,7 @@ impl Inbox {
 }
 
 impl State {
+    pub(crate) fn phone_tasks(&self)->Vec<Task>{self.inbox.items.values().map(|item|item.task.clone()).collect()}
     /// Compact island list, using the same four-row layout as the mail module.
     pub(crate) fn island_tasks(&mut self, c: &crate::paint::Card) {
         use crate::{

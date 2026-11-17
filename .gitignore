@@ -1,5 +1,6 @@
 /target/
 /prebuilt/
+**/node_modules/
 /daozai.exe
 /dist/
 /design/
